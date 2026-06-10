@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>明细行逐行上传测试页（F/D3）</title>
+<style>body{font-family:sans-serif;margin:24px} table{border-collapse:collapse;margin-top:10px} td,th{border:1px solid #ccc;padding:6px 12px}</style>
+</head>
+<body>
+  <h1>明细行逐行上传测试页</h1>
+  <p>每行一个独立上传框（@rowindex 定位），验证 loop 逐行 upload（selector 含 {{rowIndex}}）回放。</p>
+  <table id="detail-table">
+    <thead><tr><th>行</th><th>附件上传</th></tr></thead>
+    <tbody>
+      <tr rowindex="1"><td>行 1</td><td><input type="file" class="row-file"></td></tr>
+      <tr rowindex="2"><td>行 2</td><td><input type="file" class="row-file"></td></tr>
+      <tr rowindex="3"><td>行 3</td><td><input type="file" class="row-file"></td></tr>
+    </tbody>
+  </table>
+  <h3>已上传文件名（累积）</h3>
+  <div id="uploaded">（无）</div>
+<script>
+  // 每个 input change 时把文件名 append 到 #uploaded（.fn），供 loop 后 check selector_count 验证
+  document.querySelectorAll('.row-file').forEach(function(inp){
+    inp.addEventListener('change', function(){
+      var names = Array.from(inp.files).map(f => f.name);
+      var d = document.getElementById('uploaded');
+      if (d.textContent === '（无）') d.innerHTML = '';
+      d.innerHTML += names.map(n => '<div class="fn">' + n + '</div>').join('');
+    });
+  });
+</script>
+</body>
+</html>

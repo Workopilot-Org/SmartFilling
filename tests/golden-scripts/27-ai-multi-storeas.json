@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "scriptId": "gt-27-ai-multi-storeas",
+  "name": "GT27 AI action 多 storeAs（需服务，非确定性）",
+  "description": "E⑬ + 调研#9：ai action 对象 storeAs（{token,itemCount} 多变量）→ done 工具 result 传对象 → ScriptEngine VariableHelper.StoreVars 多 storeAs 拆分（value=JsonElement(Object) 经修复后归一化拆分）+ check(js) 否定式硬断言（vars 未设→step_error，避免软检查静默 PASS）。非确定性，需 DashScope",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase", "name": "ai-multi-storeas", "type": "sequential", "aiGoal": "AI 读取页面两个值并多变量存储",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/extract-result.html" },
+        { "kind": "step", "name": "ai-extract-multi", "action": "ai",
+          "description": "读取页面上隐藏输入框 #hid-token 的 value（应为 ABC123）和 .item 元素的数量（应为 4），通过 done 工具的 result 参数返回包含 token 和 itemCount 两个变量的 JSON 对象",
+          "maxAiTurns": 12,
+          "storeAs": { "token": "隐藏 token 值", "itemCount": "条目数量" } },
+        { "kind": "step", "name": "check-vars-set", "action": "check", "detect": { "type": "js", "check": "!(vars.token && vars.itemCount !== undefined)" }, "then": "step_error", "onError": "stop" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-27" }
+      ]
+    }
+  ]
+}

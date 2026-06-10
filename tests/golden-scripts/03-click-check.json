@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "scriptId": "gt-03-click-check",
+  "name": "GT03 点击+可见性检测",
+  "description": "smoke: click / check(selector_text, not selector_visible)",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "interact",
+      "type": "sequential",
+      "aiGoal": "点击计数按钮与切换按钮，校验文本变化与元素隐藏",
+      "steps": [
+        { "kind": "step", "name": "goto-form", "action": "navigate", "url": "http://localhost:8088/form-basic.html" },
+        { "kind": "step", "name": "click-count", "action": "click", "selector": "#btn-count" },
+        { "kind": "step", "name": "check-count-text", "action": "check", "detect": { "type": "selector_text", "selector": "#btn-count", "keywords": ["(1)"] }, "then": "nothing" },
+        { "kind": "step", "name": "click-toggle", "action": "click", "selector": "#btn-toggle" },
+        { "kind": "step", "name": "check-toggle-hidden", "action": "check", "detect": { "not": { "type": "selector_visible", "selector": "#toggle-box" } }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-03" }
+      ]
+    }
+  ]
+}

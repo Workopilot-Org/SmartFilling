@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>上传测试页</title>
+<style>body{font-family:sans-serif;margin:24px} .fn{padding:2px 0}</style>
+</head>
+<body>
+  <h1>上传测试页</h1>
+  <input id="file-input" type="file" multiple>
+  <h3>已选文件</h3>
+  <div id="file-list">（无）</div>
+<script>
+  document.getElementById('file-input').addEventListener('change', function(e){
+    var names = Array.from(e.target.files).map(f => f.name);
+    document.getElementById('file-list').innerHTML =
+      names.length ? names.map(n => '<div class="fn">'+n+'</div>').join('') : '（无）';
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "scriptId": "gt-22-captcha-click",
+  "name": "GT22 点选验证码（captcha click，半确定性）",
+  "description": "captcha click：截图大图→detection→按坐标点击；断言任务跑通（点击坐标映射为页面坐标，半确定性）",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase", "name": "click-captcha", "type": "sequential", "aiGoal": "检测点选目标并点击",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/captcha.html" },
+        { "kind": "step", "name": "solve-click", "action": "captcha", "captchaType": "click", "imageSelector": "#click-img" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-22" }
+      ]
+    }
+  ]
+}

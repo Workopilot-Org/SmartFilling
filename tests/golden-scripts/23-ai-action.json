@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "scriptId": "gt-23-ai-action",
+  "name": "GT23 AI action 自主点击（需服务，非确定性）",
+  "description": "ai action：AI 自主点击按钮；maxAiTurns 5；烧 DashScope token，非确定性",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase", "name": "ai-click", "type": "sequential", "aiGoal": "AI 自主点击计数按钮",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/form-basic.html" },
+        { "kind": "step", "name": "ai-click-btn", "action": "ai", "description": "点击页面上 id 为 btn-count 的按钮（点击一次即可）", "maxAiTurns": 5 },
+        { "kind": "step", "name": "check-clicked", "action": "check", "detect": { "type": "selector_text", "selector": "#btn-count", "keywords": ["(1)"] }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-23" }
+      ]
+    }
+  ]
+}

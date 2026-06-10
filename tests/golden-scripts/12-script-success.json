@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "scriptId": "gt-12-script-success",
+  "name": "GT12 控制流：script_success 提前结束整个脚本",
+  "description": "check then script_success 终止脚本（后续 phase 不应执行）；expect=completed（p2 被跳过则完成，否则 p2 click 失败元素→失败）",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase", "name": "p1", "type": "sequential", "aiGoal": "记录后 script_success 结束脚本",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/control.html" },
+        { "kind": "step", "name": "log", "action": "evaluate", "code": "document.getElementById('log').textContent='started;'" },
+        { "kind": "step", "name": "end", "action": "check", "detect": { "type": "always" }, "then": "script_success" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "p2", "type": "sequential", "aiGoal": "若执行则必然失败（点击不存在元素），用于反证 script_success 已结束脚本",
+      "steps": [
+        { "kind": "step", "name": "fail-if-run", "action": "click", "selector": "#nonexistent-marker-xyz" }
+      ]
+    }
+  ]
+}

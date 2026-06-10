@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "scriptId": "gt-21-captcha-pixel",
+  "name": "GT21 像素差异滑块验证码（captcha pixel，半确定性）",
+  "description": "captcha pixel：截图无缺口+有缺口两完整图→slide_comparison→拖动滑块；断言拖动发生（半确定性）",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase", "name": "pixel-captcha", "type": "sequential", "aiGoal": "求两图差异位移并拖动滑块",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/captcha.html" },
+        { "kind": "step", "name": "solve-pixel", "action": "captcha", "captchaType": "pixel", "sliderSelector": "#pixel-btn", "targetSelector": "#pixel-before", "backgroundSelector": "#pixel-after" },
+        { "kind": "step", "name": "check-drag", "action": "check", "detect": { "type": "selector_text", "selector": "#pixel-status", "keywords": ["拖动位移"] }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-21" }
+      ]
+    }
+  ]
+}

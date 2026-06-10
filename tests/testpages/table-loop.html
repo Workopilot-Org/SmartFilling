@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>表格循环测试页</title>
+<style>body{font-family:sans-serif;margin:24px} input{padding:4px;margin:4px 0} table{border-collapse:collapse;margin-top:10px} td,th{border:1px solid #ccc;padding:4px 12px}</style>
+</head>
+<body>
+  <h1>表格循环测试页</h1>
+  <label>名称 <input id="in-name"></label>
+  <label>数量 <input id="in-qty"></label>
+  <button id="btn-add-row">新增表格行</button>
+  <table id="data-table">
+    <thead><tr><th>名称</th><th>数量</th></tr></thead>
+    <tbody></tbody>
+  </table>
+<script>
+  document.getElementById('btn-add-row').addEventListener('click', function(){
+    var n = document.getElementById('in-name').value;
+    var q = document.getElementById('in-qty').value;
+    var tb = document.querySelector('#data-table tbody');
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td class="c-name">'+n+'</td><td class="c-qty">'+q+'</td>';
+    tb.appendChild(tr);
+  });
+</script>
+</body>
+</html>

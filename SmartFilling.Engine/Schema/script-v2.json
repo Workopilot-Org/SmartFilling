@@ -1,0 +1,626 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartfilling.internal/schemas/script-v2.json",
+  "title": "SmartFilling v2 Script Schema",
+  "description": "智能填报系统 v2 脚本格式定义。用于脚本校验和 VS Code 智能提示。",
+  "type": "object",
+  "required": ["version", "scriptId", "name", "phases"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 2,
+      "description": "脚本格式版本号，v2 固定为 2"
+    },
+    "scriptId": {
+      "type": "string",
+      "description": "脚本唯一标识",
+      "examples": ["hk-sales-invoice-001"]
+    },
+    "documentTypeId": {
+      "type": "string",
+      "description": "关联的单据类型 ID"
+    },
+    "name": {
+      "type": "string",
+      "description": "脚本名称",
+      "examples": ["HK销售发票填报"]
+    },
+    "description": {
+      "type": "string",
+      "description": "脚本功能描述"
+    },
+    "settings": {
+      "$ref": "#/$defs/scriptSettings"
+    },
+    "phases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/phaseItem" },
+      "description": "脚本执行阶段列表"
+    },
+    "fields": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fieldDefinition" },
+      "description": "字段定义列表"
+    },
+    "returnData": {
+      "type": "object",
+      "description": "脚本级数据返回映射。key=返回字段名，value=占位符 {{var}}（取运行时 vars，如 extract/ai 的 storeAs 变量）或任意 JSON 字面值。由录制 AI 据任务描述生成；未声明则不返回。",
+      "additionalProperties": true
+    }
+  },
+
+  "$defs": {
+
+    "scriptSettings": {
+      "type": "object",
+      "description": "脚本级配置（覆盖引擎默认值）",
+      "additionalProperties": false,
+      "properties": {
+        "defaultTimeout": { "type": "integer", "description": "默认超时(ms)", "default": 30000 },
+        "stepRetry": { "$ref": "#/$defs/stepRetry" },
+        "onError": { "$ref": "#/$defs/onErrorEnum" },
+        "viewport": { "$ref": "#/$defs/viewport" },
+        "maxAiTurns": { "type": "integer", "description": "AI 最大轮次", "default": 30 },
+        "maxScriptDuration": { "type": "integer", "description": "脚本最大执行时长(ms)", "default": 600000 },
+        "maxLoopCount": { "type": "integer", "description": "loop 最大循环次数", "default": 100 },
+        "maxPhaseGotoCount": { "type": "integer", "description": "同一 gotoKey 反复跳转上限（per-gotoKey 局部死循环保护，脚本级可覆盖）" },
+        "maxPhaseJumpCount": { "type": "integer", "description": "脚本级 goto toPhase 全局累计上限（不按 phase 重置，专防跨 phase 流浪；区别于 maxPhaseGotoCount）" },
+        "rerun": { "$ref": "#/$defs/rerunOptions", "description": "重跑(rerun)配置：row_rerun/phase_rerun 的次数与间隔（脚本级可覆盖）" },
+        "screenshot": {
+          "type": "object",
+          "description": "脚本级截图配置（覆盖引擎默认值）",
+          "additionalProperties": false,
+          "properties": {
+            "actionDefaultFolder": { "type": "string", "description": "screenshot action 默认保存目录" }
+          }
+        }
+      }
+    },
+
+    "viewport": {
+      "type": "object",
+      "description": "浏览器视口大小",
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "description": "宽度(px)", "default": 1280 },
+        "height": { "type": "integer", "description": "高度(px)", "default": 720 }
+      }
+    },
+
+    "stepRetry": {
+      "type": "object",
+      "description": "步骤重试配置",
+      "additionalProperties": false,
+      "properties": {
+        "count": { "type": "integer", "description": "重试次数", "default": 1 },
+        "interval": { "type": "integer", "description": "重试间隔(ms)", "default": 1000 }
+      }
+    },
+
+    "rerunOptions": {
+      "type": "object",
+      "description": "重跑(rerun)配置（row_rerun/phase_rerun 触发；settings.rerun 脚本级可覆盖引擎默认）",
+      "additionalProperties": false,
+      "properties": {
+        "maxRowRerunCount": { "type": "integer", "description": "loop 当前行重跑(row_rerun)上限", "default": 2 },
+        "maxPhaseRerunCount": { "type": "integer", "description": "整个 phase 重跑(phase_rerun)上限", "default": 2 },
+        "interval": { "type": "integer", "description": "重跑间隔(ms)，重跑前等待页面恢复", "default": 1000 }
+      }
+    },
+
+    "iframeChain": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "iframe selector 链（根→叶，每层一个 selector，XPath 或 CSS）。形态 A：录制时沿 ParentFrame 提取固化。null/省略=未配（继承上层 phase.iframe）；[]（显式空数组）=强制主文档（不继承）；有内容=指定链。支持 {{vars}} 替换。"
+    },
+
+    "phaseItem": {
+      "description": "阶段项（step 或 phase，通过 kind 区分）",
+      "oneOf": [
+        { "$ref": "#/$defs/stepNode" },
+        { "$ref": "#/$defs/phaseNode" }
+      ]
+    },
+
+    "phaseNode": {
+      "type": "object",
+      "description": "执行阶段",
+      "required": ["kind", "name", "aiGoal", "steps"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "const": "phase", "description": "节点类型标识" },
+        "name": { "type": "string", "description": "阶段名称（脚本内全局唯一）", "examples": ["填报合同信息"] },
+        "type": {
+          "description": "阶段类型",
+          "$ref": "#/$defs/phaseTypeEnum"
+        },
+        "aiGoal": { "type": "string", "description": "AI 目标描述（ai phase 和 AI fallback 使用）" },
+        "iframe": { "$ref": "#/$defs/iframeChain" },
+        "condition": { "$ref": "#/$defs/detectConditionNoNewRow", "description": "阶段执行前条件检测（不含 new_row_appears）" },
+        "onError": { "$ref": "#/$defs/onErrorEnum" },
+        "loopSource": { "type": "string", "description": "loop 数据源字段名" },
+        "loopCondition": { "$ref": "#/$defs/detectConditionNoNewRow", "description": "loop 继续条件（每轮评估，不含 new_row_appears）" },
+        "maxLoopCount": { "type": "integer", "description": "loop 最大循环次数" },
+        "maxAiTurns": { "type": "integer", "description": "ai phase AI 总轮次预算" },
+        "timeout": { "type": "integer", "description": "phase 超时(ms)，超时按 onError 处理" },
+        "rowIndexOffset": { "type": "integer", "description": "行索引偏移量" },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/phaseItem" },
+          "description": "子步骤列表（支持 step/phase 混合嵌套）"
+        }
+      },
+      "allOf": [
+        { "if": { "required": ["type"], "properties": { "type": { "const": "ai" } } }, "then": { "properties": { "steps": { "type": "array", "items": { "$ref": "#/$defs/aiPhaseStep" } } } } },
+        {
+          "if": { "required": ["type"], "properties": { "type": { "enum": ["sequential", "ai"] } } },
+          "then": {
+            "properties": {
+              "steps": {
+                "items": {
+                  "oneOf": [
+                    { "allOf": [
+                        { "$ref": "#/$defs/stepNode" },
+                        { "properties": { "detect": { "$ref": "#/$defs/detectConditionNoNewRow" }, "condition": { "$ref": "#/$defs/detectConditionNoNewRow" } } }
+                    ]},
+                    { "$ref": "#/$defs/phaseNode" }
+                  ]
+                }
+              }
+            }
+          },
+          "description": "DC14：sequential/ai phase 不设 _lastRowCount 基线 → check new_row_appears silent 失效，schema 架构挡（allOf 合并 stepNode + detect/condition→NoNewRow——condition 同样依赖基线，须一并挡，否则 step.condition new_row_appears 静默 false 跳过 step）；嵌套 phase 走 phaseNode 递归按各自 type 重评估"
+        }
+      ]
+    },
+
+    "aiPhaseStep": {
+      "type": "object",
+      "description": "ai phase 下的步骤（action 必须为 ai，决策 B 取消'可省略'，与现有样本一致）",
+      "required": ["kind", "name", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "const": "step" },
+        "name": { "type": "string", "description": "步骤名（必传，#42 对齐全链路 name 必传）" },
+        "action": { "type": "string", "const": "ai", "description": "ai phase 下 action 必须为 ai（不可省略，决策 B）" },
+        "description": { "type": "string", "description": "AI 子任务描述" },
+        "selector": { "type": "string", "description": "区域提示（可选）" },
+        "field": { "type": "string", "description": "业务元数据提示（可选）" },
+        "value": { "type": "string", "description": "数据提示（可选）" },
+        "storeAs": { "type": "object", "additionalProperties": { "type": "string" }, "description": "存储 AI 结果（可选）" },
+        "iframe": { "$ref": "#/$defs/iframeChain", "description": "快照范围 selector 链（可选）" }
+      }
+    },
+
+    "stepNode": {
+      "type": "object",
+      "description": "执行步骤",
+      "required": ["kind", "action", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "const": "step", "description": "节点类型标识" },
+        "name": { "type": "string", "description": "步骤名称（goto toStep 目标，同一 phase 内唯一）" },
+        "action": {
+          "description": "操作类型",
+          "$ref": "#/$defs/actionEnum"
+        },
+        "description": { "type": "string", "description": "操作意图描述" },
+        "selector": { "type": "string", "description": "XPath 选择器（录制器自动生成；手工编辑时也可用 CSS）" },
+        "value": { "type": ["string", "null"], "description": "填写/选择的值，支持 {{占位符}}" },
+        "url": { "type": "string", "description": "navigate 目标 URL" },
+        "key": { "type": "string", "description": "pressKey 按键值（Tab/Enter/Escape 等）" },
+        "filePath": { "type": "string", "description": "upload 文件路径" },
+        "code": { "type": "string", "description": "evaluate JS 代码" },
+        "args": {
+          "type": "array",
+          "items": {},
+          "description": "evaluate 参数列表"
+        },
+        "field": { "type": "string", "description": "关联的 fillData 字段名" },
+        "iframe": { "$ref": "#/$defs/iframeChain" },
+        "iframeRef": { "type": "string", "description": "录制期 iframe 元素 ref（aria-ref），代码提取为 iframe 链；回放忽略，最终脚本不含此字段" },
+        "index": { "type": "integer", "description": "switchTab 标签页索引" },
+        "direction": {
+          "description": "scroll 方向",
+          "$ref": "#/$defs/directionEnum"
+        },
+        "amount": { "type": "integer", "description": "scroll 滚动量" },
+        "accept": { "type": "boolean", "description": "handleDialog 是否 accept" },
+        "dialogPromptText": { "type": "string", "description": "handleDialog prompt 类型对话框输入文本" },
+        "doubleClick": { "type": "boolean", "description": "click 双击" },
+        "useLast": { "type": "boolean", "description": "多匹配时取最后一个" },
+        "pressEnter": { "type": "boolean", "description": "fill/type 后按回车" },
+        "matchBy": {
+          "description": "select 匹配方式",
+          "$ref": "#/$defs/matchByEnum"
+        },
+        "skipIfElementMissing": { "type": "boolean", "description": "元素不存在时跳过" },
+        "skipIfDataEmpty": { "type": "boolean", "description": "fillData 字段为空时跳过（null/空串/空数组→跳过，0/false→不跳过）" },
+        "captchaType": {
+          "description": "验证码类型",
+          "$ref": "#/$defs/captchaTypeEnum"
+        },
+        "imageSelector": { "type": "string", "description": "验证码图片选择器" },
+        "inputSelector": { "type": "string", "description": "验证码输入框选择器" },
+        "sliderSelector": { "type": "string", "description": "滑块按钮选择器" },
+        "targetSelector": { "type": "string", "description": "目标图选择器。slide 型=滑块小图；pixel 型=不带缺口的完整背景图（ddddocr slide_comparison 契约，与 backgroundSelector 两完整图求差异位移）；click 型=验证码提示文字" },
+        "backgroundSelector": { "type": "string", "description": "背景图选择器。slide 型=背景大图；pixel 型=带缺口的完整背景图" },
+        "storeAs": {
+          "description": "将返回值存为变量（string 单变量 或 object 多变量）",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "object", "additionalProperties": { "type": "string" } }
+          ]
+        },
+        "maxAiTurns": { "type": "integer", "description": "AI 最大轮次" },
+        "timeout": { "type": "integer", "description": "步骤超时(ms)" },
+        "pollInterval": { "type": "integer", "description": "wait 轮询间隔(ms)" },
+        "ms": { "type": "integer", "description": "wait 等待毫秒数" },
+        "until": { "$ref": "#/$defs/detectConditionNoNewRow", "description": "wait 等待条件（不含 new_row_appears，wait 无基线机制）" },
+        "detect": { "$ref": "#/$defs/detectConditionFull", "description": "check 条件检测（含 new_row_appears）" },
+        "then": {
+          "description": "check 分支动作",
+          "$ref": "#/$defs/thenEnum"
+        },
+        "message": { "type": "string", "description": "check 成功/失败消息" },
+        "toPhase": { "type": "string", "description": "goto 目标 phase 名称" },
+        "toStep": { "type": "string", "description": "goto 目标 step 名称" },
+        "cleanupSteps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stepNode" },
+          "description": "phase_fail/script_fail 时执行的清理步骤"
+        },
+        "property": { "type": "string", "description": "extract 提取的属性名" },
+        "extractType": { "type": "string", "enum": ["url", "title", "property"], "default": "property", "description": "extract 提取类型：url=当前URL，title=页面标题，property=元素属性（默认）" },
+        "regex": { "type": "string", "description": "extract 正则表达式" },
+        "folder": { "type": "string", "description": "screenshot 保存文件夹，覆盖 ActionDefaultFolder 配置" },
+        "filename": { "type": "string", "description": "screenshot 文件名（不含扩展名），空则自动生成" },
+        "screenshotType": { "type": "string", "enum": ["viewport", "fullPage", "element"], "default": "viewport",
+            "description": "截图类型：viewport(可见区域)/fullPage(整页)/element(元素，需selector)" },
+        "saveToFile": { "type": "boolean", "default": true,
+            "description": "是否保存文件到磁盘。false 时不保存文件，只生成图片数据" },
+        "storeContent": { "type": "string", "enum": ["path", "dataUrl", "both"], "default": "path",
+            "description": "storeAs 存什么：path(文件绝对路径)/dataUrl(base64 data URL)/both(两者)。saveToFile=false 时只能为 dataUrl" },
+        "condition": { "$ref": "#/$defs/detectConditionFull", "description": "步骤执行前条件检测（含 new_row_appears）" },
+        "fallback": { "$ref": "#/$defs/stepFallback" },
+        "preSetup": { "$ref": "#/$defs/preSetup" },
+        "retry": { "$ref": "#/$defs/stepRetry" },
+        "onError": { "$ref": "#/$defs/onErrorEnum" }
+      },
+      "allOf": [
+        { "if": { "not": { "properties": { "action": { "const": "check" } } } }, "then": { "properties": { "detect": false } } },
+        { "if": { "not": { "properties": { "action": { "const": "wait" } } } }, "then": { "properties": { "until": false } } },
+        { "if": { "properties": { "action": { "const": "navigate" } } }, "then": { "required": ["url"] } },
+        { "if": { "properties": { "action": { "const": "click" } } }, "then": { "required": ["selector"] } },
+        { "if": { "properties": { "action": { "const": "fill" } } }, "then": { "required": ["selector", "value"] } },
+        { "if": { "properties": { "action": { "const": "type" } } }, "then": { "required": ["selector", "value"] } },
+        { "if": { "properties": { "action": { "const": "select" } } }, "then": { "required": ["selector", "value"] } },
+        { "if": { "properties": { "action": { "const": "hover" } } }, "then": { "required": ["selector"] } },
+        { "if": { "properties": { "action": { "const": "upload" } } }, "then": { "required": ["selector", "filePath"] } },
+        { "if": { "properties": { "action": { "const": "evaluate" } } }, "then": { "required": ["code"] } },
+        { "if": { "properties": { "action": { "const": "extract" } } }, "then": { "required": ["storeAs"] } },
+        { "if": { "properties": { "action": { "const": "check" } } }, "then": { "required": ["detect", "then"] } },
+        { "if": { "properties": { "action": { "const": "handleDialog" } } }, "then": { "required": ["accept"] } },
+        { "if": { "properties": { "action": { "const": "ai" } } }, "then": { "required": ["description"] } },
+        { "if": { "properties": { "action": { "const": "captcha" } } }, "then": { "required": ["captchaType"] } },
+        { "if": { "required": ["screenshotType"], "properties": { "action": { "const": "screenshot" }, "screenshotType": { "const": "element" } } },
+          "then": { "required": ["selector"] } },
+        { "if": { "properties": { "action": { "const": "hover" } } }, "then": { "properties": { "storeAs": false } } },
+        { "if": { "properties": { "action": { "const": "pressKey" } } }, "then": { "required": ["key"] } },
+        { "if": { "properties": { "action": { "const": "pressKey" } } }, "then": { "properties": { "storeAs": false } } },
+        { "if": { "properties": { "action": { "const": "scroll" } } }, "then": { "properties": { "storeAs": false } } },
+        { "if": { "properties": { "action": { "const": "scroll" } } },
+          "then": { "oneOf": [ { "required": ["selector"], "not": { "required": ["direction"] } }, { "required": ["direction"], "not": { "required": ["selector"] } } ] } },
+        { "if": { "properties": { "action": { "const": "upload" } } }, "then": { "properties": { "storeAs": false } } },
+        { "if": { "properties": { "action": { "const": "goBack" } } }, "then": { "properties": { "storeAs": false } } },
+        { "if": { "properties": { "action": { "const": "reload" } } }, "then": { "properties": { "storeAs": false } } },
+        { "if": { "properties": { "action": { "const": "closeTab" } } }, "then": { "properties": { "storeAs": false } } },
+        { "if": { "properties": { "action": { "const": "wait" } } }, "then": { "properties": { "storeAs": false } } },
+        { "if": { "properties": { "action": { "const": "check" } } }, "then": { "properties": { "storeAs": false } } },
+        { "if": { "properties": { "action": { "const": "captcha" } } }, "then": { "properties": { "storeAs": false } } },
+        { "if": { "properties": { "action": { "const": "goto" } } }, "then": { "properties": { "storeAs": false } } },
+        { "if": { "properties": { "action": { "const": "ai" } } },
+          "then": { "properties": { "storeAs": { "type": "object", "additionalProperties": { "type": "string" },
+            "description": "AI action 必须用多变量格式：{ \"变量名\": \"描述\" }" } } } }
+      ]
+    },
+
+    "detectConditionFull": {
+      "description": "条件检测（含 new_row_appears；用于 step.detect/step.condition）",
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "单条件检测",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "description": "检测类型",
+              "$ref": "#/$defs/detectTypeEnum"
+            },
+            "ref": { "type": "string", "description": "录制期元素 ref（aria-ref），代码自动提取为 selector；回放忽略，最终脚本不含此字段" },
+            "iframeRef": { "type": "string", "description": "录制期 iframe 元素 ref（aria-ref），代码提取为 iframe 链；回放忽略，最终脚本不含此字段" },
+            "selector": { "type": "string", "description": "目标元素选择器（XPath 或 CSS）" },
+            "value": { "type": "string", "description": "期望值" },
+            "keywords": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "关键词列表"
+            },
+            "field": { "type": "string", "description": "fillData 字段名" },
+            "check": { "type": "string", "description": "JS 表达式（服务端执行）" },
+            "iframe": { "$ref": "#/$defs/iframeChain" },
+            "count": { "type": "integer", "description": "期望元素数量" },
+            "urlContains": { "type": "string", "description": "URL 包含的字符串" }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "type": { "const": "new_row_appears" } } },
+              "then": { "required": ["selector"], "description": "DC9：new_row_appears 是计数基线（数所有行），selector 不可省（默认 table tbody tr 在 grid 场景 silent 数 0）" }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "description": "AND 组合条件（全部满足）",
+          "required": ["all"],
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/detectConditionFull" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "OR 组合条件（任一满足）",
+          "required": ["any"],
+          "additionalProperties": false,
+          "properties": {
+            "any": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/detectConditionFull" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "NOT 取反条件",
+          "required": ["not"],
+          "additionalProperties": false,
+          "properties": {
+            "not": { "$ref": "#/$defs/detectConditionFull" }
+          }
+        }
+      ]
+    },
+
+    "detectConditionNoNewRow": {
+      "description": "条件检测（不含 new_row_appears；用于 step.until/phase.condition/phase.loopCondition——这些位置无 tableFrame 基线机制）",
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "单条件检测（禁止 new_row_appears）",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "description": "检测类型（不含 new_row_appears）",
+              "$ref": "#/$defs/detectTypeEnumNoNewRow"
+            },
+            "ref": { "type": "string", "description": "录制期元素 ref（aria-ref），代码自动提取为 selector；回放忽略，最终脚本不含此字段" },
+            "iframeRef": { "type": "string", "description": "录制期 iframe 元素 ref（aria-ref），代码提取为 iframe 链；回放忽略，最终脚本不含此字段" },
+            "selector": { "type": "string", "description": "目标元素选择器（XPath 或 CSS）" },
+            "value": { "type": "string", "description": "期望值" },
+            "keywords": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "关键词列表"
+            },
+            "field": { "type": "string", "description": "fillData 字段名" },
+            "check": { "type": "string", "description": "JS 表达式（服务端执行）" },
+            "iframe": { "$ref": "#/$defs/iframeChain" },
+            "count": { "type": "integer", "description": "期望元素数量" },
+            "urlContains": { "type": "string", "description": "URL 包含的字符串" }
+          }
+        },
+        {
+          "type": "object",
+          "description": "AND 组合条件（全部满足）",
+          "required": ["all"],
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/detectConditionNoNewRow" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "OR 组合条件（任一满足）",
+          "required": ["any"],
+          "additionalProperties": false,
+          "properties": {
+            "any": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/detectConditionNoNewRow" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "description": "NOT 取反条件",
+          "required": ["not"],
+          "additionalProperties": false,
+          "properties": {
+            "not": { "$ref": "#/$defs/detectConditionNoNewRow" }
+          }
+        }
+      ]
+    },
+
+    "fieldDefinition": {
+      "type": "object",
+      "description": "字段定义",
+      "required": ["name", "label", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "字段标识（脚本内全局唯一）", "examples": ["F_HTMC"] },
+        "label": { "type": "string", "description": "字段显示名", "examples": ["合同名称"] },
+        "type": {
+          "description": "字段类型",
+          "$ref": "#/$defs/fieldTypeEnum"
+        },
+        "uiComponent": {
+          "description": "UI 组件类型",
+          "$ref": "#/$defs/uiComponentEnum"
+        },
+        "source": {
+          "description": "数据来源",
+          "$ref": "#/$defs/sourceEnum"
+        },
+        "required": { "type": "boolean", "description": "是否必填" },
+        "defaultValue": { "description": "默认值" },
+        "options": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "选项列表"
+        },
+        "format": { "type": "string", "description": "格式化规则（如日期格式）" },
+        "min": { "type": "number", "description": "最小值" },
+        "max": { "type": "number", "description": "最大值" },
+        "maxLength": { "type": "integer", "description": "最大长度" },
+        "pattern": { "type": "string", "description": "正则校验" },
+        "description": { "type": "string", "description": "字段说明" },
+        "placeholder": { "type": "string", "description": "输入提示" },
+        "multiple": { "type": "boolean", "description": "是否多选/多文件" },
+        "items": {
+          "type": "object",
+          "description": "简单数组字段的元素类型定义",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string", "description": "元素类型：string/number/date/boolean" },
+            "format": { "type": "string", "description": "格式约束（如 date: YYYY-MM-DD）" },
+            "options": { "type": "array", "items": { "type": "string" }, "description": "枚举选项" },
+            "min": { "type": "number", "description": "最小值" },
+            "max": { "type": "number", "description": "最大值" }
+          }
+        },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fieldDefinition" },
+          "description": "嵌套子字段定义（type=array 且结构化行时）"
+        },
+        "transform": { "type": "string", "enum": ["trim", "upper", "lower"], "description": "值变换规则；date/number 转换由 format 字段承担（见改动7）" }
+      }
+    },
+
+    "stepFallback": {
+      "type": "object",
+      "description": "步骤备选方案",
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string", "description": "录制期元素 ref（aria-ref），代码提取为 selector；回放忽略，最终脚本不含此字段" },
+        "selector": { "type": "string", "description": "目标元素选择器（XPath 或 CSS）" },
+        "action": { "type": "string" },
+        "value": { "type": ["string", "null"] },
+        "code": { "type": "string" },
+        "iframe": { "$ref": "#/$defs/iframeChain", "description": "iframe selector 链（缺省继承 step 的 iframe）" },
+        "iframeRef": { "type": "string", "description": "录制期 iframe 元素 ref（aria-ref），代码提取为 iframe 链；回放忽略，最终脚本不含此字段" },
+        "timeout": { "type": "integer", "description": "超时(ms)（缺省继承 step 的 timeout）" },
+        "fallback": { "$ref": "#/$defs/stepFallback", "description": "递归备选方案" }
+      }
+    },
+
+    "preSetup": {
+      "type": "object",
+      "description": "执行前设置",
+      "additionalProperties": false,
+      "properties": {
+        "dialogHandler": {
+          "type": "string",
+          "description": "对话框处理方式",
+          "enum": ["auto_accept", "auto_dismiss"]
+        },
+        "dialogText": { "type": "string", "description": "对话框输入文本" }
+      }
+    },
+
+    "actionEnum": {
+      "type": "string",
+      "description": "步骤操作类型",
+      "enum": ["navigate", "click", "fill", "type", "select", "hover", "pressKey", "scroll", "upload", "evaluate", "extract", "goBack", "reload", "switchTab", "closeTab", "wait", "check", "handleDialog", "screenshot", "ai", "captcha", "goto"]
+    },
+
+    "phaseTypeEnum": {
+      "type": "string",
+      "description": "阶段类型",
+      "enum": ["sequential", "loop", "ai"],
+      "default": "sequential"
+    },
+
+    "thenEnum": {
+      "type": "string",
+      "description": "check 条件满足后的动作。nothing=通过(no-op)；continue=下一行(loop 下一次迭代)；step_error=按本 step onError 处理(stop/skip/ai-fallback-stop/ai-fallback-skip)；phase_success=phase 成功；phase_error=触发 phase onError；phase_rerun=重跑整个 phase；row_rerun=重跑当前行(仅 loop)；script_success=脚本成功；script_fail=终止脚本；goto=跳转；break=跳出循环(仅 loop)。",
+      "enum": ["nothing", "continue", "step_error", "phase_success", "phase_error", "phase_rerun", "row_rerun", "script_success", "script_fail", "goto", "break"]
+    },
+
+    "onErrorEnum": {
+      "type": "string",
+      "description": "步骤/阶段失败策略",
+      "enum": ["stop", "skip", "ai-fallback-stop", "ai-fallback-skip"],
+      "default": "stop"
+    },
+
+    "detectTypeEnum": {
+      "type": "string",
+      "description": "条件检测类型。iframe_exists：检查 iframe 元素是否存在——selector（必填，要检查的 iframe 元素）+ 可选 iframe（父上下文 selector 链，在哪个链内找）；document_ready：评估目标 frame 的 document.readyState === 'complete'（iframe 可省略=继承默认 frame/主页面；[]=主页面 / [链]=指定 iframe）",
+      "enum": ["url_changed", "url_contains", "selector_visible", "selector_exists", "selector_gone", "selector_enabled", "iframe_exists", "page_exists", "dialog_contains", "page_contains", "selector_value", "selector_text", "selector_checked", "selector_selected", "selector_count", "new_row_appears", "js", "data_exists", "document_ready", "always"]
+    },
+
+    "detectTypeEnumNoNewRow": {
+      "type": "string",
+      "description": "条件检测类型（不含 new_row_appears——该类型仅可用于 check step 的 detect / step.condition，依赖 tableFrame 基线机制；document_ready 同样适用：评估目标 frame 的 readyState === 'complete'，iframe 可省略（=继承默认 frame/主页面）——[] = 主页面 / [链] = 指定 iframe）",
+      "enum": ["url_changed", "url_contains", "selector_visible", "selector_exists", "selector_gone", "selector_enabled", "iframe_exists", "page_exists", "dialog_contains", "page_contains", "selector_value", "selector_text", "selector_checked", "selector_selected", "selector_count", "js", "data_exists", "document_ready", "always"]
+    },
+
+    "fieldTypeEnum": {
+      "type": "string",
+      "description": "字段类型",
+      "enum": ["string", "number", "date", "boolean", "file", "array"]
+    },
+
+    "uiComponentEnum": {
+      "type": "string",
+      "description": "UI 组件类型",
+      "enum": ["input", "textarea", "select", "radio", "checkbox", "upload", "click-choose", "datepicker", "hidden", "table"]
+    },
+
+    "sourceEnum": {
+      "type": "string",
+      "description": "字段数据来源",
+      "enum": ["user", "system", "computed"]
+    },
+
+    "captchaTypeEnum": {
+      "type": "string",
+      "description": "验证码类型：text=文字识别；slide=滑块拼图（targetSelector 小滑块图 + backgroundSelector 背景大图，调 slide_match）；pixel=像素差异滑块（targetSelector 不带缺口完整背景图 + backgroundSelector 带缺口完整背景图，调 slide_comparison，两图求差异位移）；click=点选",
+      "enum": ["text", "slide", "pixel", "click"]
+    },
+
+    "matchByEnum": {
+      "type": "string",
+      "description": "select 匹配方式",
+      "enum": ["value", "label", "index"]
+    },
+
+    "directionEnum": {
+      "type": "string",
+      "description": "scroll 方向",
+      "enum": ["up", "down", "left", "right", "bottom", "top"]
+    }
+  }
+}

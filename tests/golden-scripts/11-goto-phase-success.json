@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "scriptId": "gt-11-goto-phase-success",
+  "name": "GT11 控制流：goto 跳过 + phase_success 提前结束当前 phase",
+  "description": "check then goto(toPhase) 跳过中间 phase / check then phase_success 跳过当前 phase 后续 step",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase", "name": "p-a", "type": "sequential", "aiGoal": "起点，记录 A 后跳到 p-c（跳过 p-b）",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/control.html" },
+        { "kind": "step", "name": "log-a", "action": "evaluate", "code": "document.getElementById('log').textContent='A;'" },
+        { "kind": "step", "name": "jump", "action": "check", "detect": { "type": "always" }, "then": "goto", "toPhase": "p-c" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "p-b", "type": "sequential", "aiGoal": "应被 goto 跳过",
+      "steps": [
+        { "kind": "step", "name": "log-b", "action": "evaluate", "code": "document.getElementById('log').textContent+='B;'" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "p-c", "type": "sequential", "aiGoal": "记录 C 后 phase_success 提前结束（跳过 log-c2）",
+      "steps": [
+        { "kind": "step", "name": "log-c", "action": "evaluate", "code": "document.getElementById('log').textContent+='C;'" },
+        { "kind": "step", "name": "end-c", "action": "check", "detect": { "type": "always" }, "then": "phase_success" },
+        { "kind": "step", "name": "log-c2", "action": "evaluate", "code": "document.getElementById('log').textContent+='C2;'" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "p-d", "type": "sequential", "aiGoal": "记录 D 并校验最终日志为 A;C;D;（B 与 C2 被跳过）",
+      "steps": [
+        { "kind": "step", "name": "log-d", "action": "evaluate", "code": "document.getElementById('log').textContent+='D;'" },
+        { "kind": "step", "name": "check-log", "action": "check", "detect": { "type": "selector_text", "selector": "#log", "keywords": ["A;C;D;"] }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-11" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "scriptId": "gt-01-navigate-wait-screenshot",
+  "name": "GT01 导航+等待+URL检测+截图",
+  "description": "smoke: navigate / wait(ms) / check(url_contains) / screenshot(fullPage)",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "open-page",
+      "type": "sequential",
+      "aiGoal": "打开登录测试页并验证 URL 包含 login",
+      "steps": [
+        { "kind": "step", "name": "goto-login", "action": "navigate", "url": "http://localhost:8088/login.html" },
+        { "kind": "step", "name": "wait-300", "action": "wait", "ms": 300 },
+        { "kind": "step", "name": "check-url", "action": "check", "detect": { "type": "url_contains", "value": "login" }, "then": "nothing" },
+        { "kind": "step", "name": "shot-fullpage", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-01" }
+      ]
+    }
+  ]
+}

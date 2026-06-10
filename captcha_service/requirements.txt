@@ -1,0 +1,14 @@
+# mini_server 验证码识别服务依赖（FastAPI + ddddocr 1.6.1）
+# 安装命令: pip install --upgrade -r requirements.txt
+
+# FastAPI Web 框架（替代旧 Flask）
+fastapi>=0.138
+uvicorn>=0.49
+pydantic>=2
+python-multipart>=0.0.32
+
+# ddddocr 验证码识别库（1.6.1 新签名；[api] 拉 fastapi/uvicorn 依赖）
+ddddocr[api]==1.6.1
+
+# Pillow 图像处理（/det 的 crop 用）
+Pillow>=10.0.0

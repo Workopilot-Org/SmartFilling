@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>验证码测试页</title>
+<style>
+  body{font-family:sans-serif;margin:24px}
+  .section{margin:20px 0;padding:12px;border:1px solid #ddd}
+  img{border:1px solid #999;display:block}
+  input{padding:6px;margin:6px 0}
+  .track{position:relative;width:340px;height:40px;background:#eee;margin:6px 0}
+  .btn{position:absolute;left:0;top:0;width:40px;height:40px;background:#09c;cursor:pointer}
+  .status{margin-top:6px;color:#070}
+  .small{font-size:12px;color:#666}
+</style>
+</head>
+<body>
+  <h1>验证码测试页</h1>
+
+  <div class="section">
+    <h3>文字验证码（captchaType=text）</h3>
+    <img id="captcha-img" src="captcha-text.png" width="200" height="80">
+    <input id="captcha-input" placeholder="识别结果填入此处">
+    <div class="small">期望识别：3781</div>
+  </div>
+
+  <div class="section">
+    <h3>拼图滑块（captchaType=slide）</h3>
+    <img id="slider-bg" src="slide-bg.png">
+    <img id="slider-target" src="slide-target.png" style="position:absolute;left:-9999px">
+    <div class="track" id="slider-track">
+      <div class="btn" id="slider-btn"></div>
+    </div>
+    <div class="status" id="slide-status">未拖动</div>
+  </div>
+
+  <div class="section">
+    <h3>像素差异滑块（captchaType=pixel）</h3>
+    <img id="pixel-before" src="pixel-before.png">
+    <img id="pixel-after" src="pixel-after.png" style="position:absolute;left:-9999px">
+    <div class="track" id="pixel-track">
+      <div class="btn" id="pixel-btn"></div>
+    </div>
+    <div class="status" id="pixel-status">未拖动</div>
+  </div>
+
+  <div class="section">
+    <h3>点选验证码（captchaType=click）</h3>
+    <img id="click-img" src="click-captcha.png">
+    <div class="status" id="click-status">点击数：0</div>
+  </div>
+
+<script>
+  // 滑块拖动：记录最终位移（供半确定性观察，不强校验）
+  function bindSlider(btnId, statusId){
+    var btn=document.getElementById(btnId), st=document.getElementById(statusId), startX=null;
+    document.addEventListener('mousedown',function(e){
+      var r=btn.getBoundingClientRect();
+      if(e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom){ startX=e.clientX; }
+    });
+    document.addEventListener('mouseup',function(e){
+      if(startX!==null){ var dx=Math.round(e.clientX-startX); st.textContent='拖动位移：'+dx+'px'; startX=null; }
+    });
+  }
+  bindSlider('slider-btn','slide-status');
+  bindSlider('pixel-btn','pixel-status');
+  document.getElementById('click-img').addEventListener('click',function(){
+    var s=document.getElementById('click-status');
+    var n=parseInt((s.textContent.match(/(\d+)/)||[0,0])[1],10)+1;
+    s.textContent='点击数：'+n;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "scriptId": "gt-05-interact-type-select-detect",
+  "name": "GT05 交互集：双击/悬停/滚动/逐字输入/选择匹配/计数/勾选/选中",
+  "description": "doubleClick / hover / scroll(direction) / type / select(label,index) / check(selector_count,selector_checked,selector_selected,selector_visible)",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "login-interact",
+      "type": "sequential",
+      "aiGoal": "在登录页验证滚动到底、双击显密、悬停显提示",
+      "steps": [
+        { "kind": "step", "name": "goto-login", "action": "navigate", "url": "http://localhost:8088/login.html" },
+        { "kind": "step", "name": "scroll-bottom", "action": "scroll", "direction": "bottom" },
+        { "kind": "step", "name": "check-scroll-target", "action": "check", "detect": { "type": "selector_visible", "selector": "#scroll-target" }, "then": "nothing" },
+        { "kind": "step", "name": "dbl-secret", "action": "click", "selector": "#dbl-btn", "doubleClick": true },
+        { "kind": "step", "name": "check-dbl", "action": "check", "detect": { "type": "selector_visible", "selector": "#dbl-secret" }, "then": "nothing" },
+        { "kind": "step", "name": "hover-zone", "action": "hover", "selector": "#hover-zone" },
+        { "kind": "step", "name": "check-hover", "action": "check", "detect": { "type": "selector_visible", "selector": "#hover-tip" }, "then": "nothing" }
+      ]
+    },
+    {
+      "kind": "phase",
+      "name": "form-interact",
+      "type": "sequential",
+      "aiGoal": "在基础表单页验证逐字输入、按label/index选择、行计数、勾选与选中状态",
+      "steps": [
+        { "kind": "step", "name": "goto-form", "action": "navigate", "url": "http://localhost:8088/form-basic.html" },
+        { "kind": "step", "name": "type-remark", "action": "type", "selector": "#f-remark", "value": "备注内容" },
+        { "kind": "step", "name": "check-typed", "action": "check", "detect": { "type": "selector_value", "selector": "#f-remark", "value": "备注内容" }, "then": "nothing" },
+        { "kind": "step", "name": "select-label", "action": "select", "selector": "#f-color", "value": "蓝色", "matchBy": "label" },
+        { "kind": "step", "name": "check-label-val", "action": "check", "detect": { "type": "selector_value", "selector": "#f-color", "value": "B" }, "then": "nothing" },
+        { "kind": "step", "name": "click-agree", "action": "click", "selector": "#f-agree" },
+        { "kind": "step", "name": "check-checked", "action": "check", "detect": { "type": "selector_checked", "selector": "#f-agree" }, "then": "nothing" },
+        { "kind": "step", "name": "check-count", "action": "check", "detect": { "type": "selector_count", "selector": ".row", "count": 3 }, "then": "nothing" },
+        { "kind": "step", "name": "select-index", "action": "select", "selector": "#f-color", "value": "1", "matchBy": "index" },
+        { "kind": "step", "name": "check-selected", "action": "check", "detect": { "type": "selector_selected", "selector": "#f-color", "value": "R" }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-05" }
+      ]
+    }
+  ]
+}

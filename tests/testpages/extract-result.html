@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>提取结果测试页</title>
+<style>body{font-family:sans-serif;margin:24px} .item{padding:4px;border-bottom:1px solid #eee}</style>
+</head>
+<body>
+  <h1>提取结果测试页</h1>
+  <div id="box" data-status="active">订单编号：ORD-2026-0001</div>
+  <input id="hid-token" type="hidden" value="ABC123">
+  <p>状态属性：<span id="status-text">active</span></p>
+
+  <h3>条目列表（4 项）</h3>
+  <div id="item-list">
+    <div class="item">苹果</div>
+    <div class="item">香蕉</div>
+    <div class="item">樱桃</div>
+    <div class="item">榴莲</div>
+  </div>
+
+  <p><label><input type="checkbox" id="cb-done"> 已完成</label></p>
+
+  <label>支付方式
+    <select id="sel-pay">
+      <option value="">请选择</option>
+      <option value="alipay">支付宝</option>
+      <option value="wechat">微信</option>
+      <option value="card">银行卡</option>
+    </select>
+  </label>
+
+  <div id="calc">计算区</div>
+  <button id="btn-result" onclick="document.getElementById('result-out').textContent='处理完成：'+(document.getElementById('sel-pay').value||'无')">执行</button>
+  <div id="result-out">未执行</div>
+
+<script>
+  // 给 checkbox 默认勾选，便于 extract checked 校验
+  document.getElementById('cb-done').checked = true;
+  document.getElementById('sel-pay').value = 'wechat';
+</script>
+</body>
+</html>

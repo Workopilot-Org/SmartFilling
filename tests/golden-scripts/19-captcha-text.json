@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "scriptId": "gt-19-captcha-text",
+  "name": "GT19 文字验证码（captcha text，半确定性）",
+  "description": "captcha text：截图→ddddocr classification→填入；断言输入值=3781（依赖 OCR，半确定性）",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase", "name": "text-captcha", "type": "sequential", "aiGoal": "识别文字验证码并填入输入框",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/captcha.html" },
+        { "kind": "step", "name": "solve-text", "action": "captcha", "captchaType": "text", "imageSelector": "#captcha-img", "inputSelector": "#captcha-input" },
+        { "kind": "step", "name": "check-result", "action": "check", "detect": { "type": "selector_value", "selector": "#captcha-input", "value": "3781" }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-19" }
+      ]
+    }
+  ]
+}

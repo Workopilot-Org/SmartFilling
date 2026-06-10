@@ -1,0 +1,6 @@
+@SmartFilling.App_HostAddress = http://localhost:5164
+
+GET {{SmartFilling.App_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

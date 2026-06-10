@@ -1,0 +1,18 @@
+{
+  "version": 2,
+ "scriptId": "gt-20-captcha-slide",
+  "name": "GT20 拼图滑块验证码（captcha slide，半确定性）",
+  "description": "captcha slide：截图小图+背景→slide_match→拖动滑块；断言拖动发生（位移注册，半确定性）",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase", "name": "slide-captcha", "type": "sequential", "aiGoal": "识别拼图缺口并拖动滑块",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/captcha.html" },
+        { "kind": "step", "name": "solve-slide", "action": "captcha", "captchaType": "slide", "sliderSelector": "#slider-btn", "targetSelector": "#slider-target", "backgroundSelector": "#slider-bg" },
+        { "kind": "step", "name": "check-drag", "action": "check", "detect": { "type": "selector_text", "selector": "#slide-status", "keywords": ["拖动位移"] }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-20" }
+      ]
+    }
+  ]
+}

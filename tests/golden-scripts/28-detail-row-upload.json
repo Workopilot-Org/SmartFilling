@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "scriptId": "gt-28-detail-row-upload",
+  "name": "GT28 明细行逐行上传（F/D3 rowIndexed 回放）",
+  "description": "F/D3：loop(loopSource=attachments) 逐行 upload，selector 含 {{rowIndex}}（@rowindex 定位），filePath={{path}} 取当前行附件。验证录制期 ParametrizeRowIndex 产出的 {{rowIndex}} selector 能正确回放（ReplaceVars 替换行索引 + ResolveUploadValue 取 path）",
+  "fields": [
+    { "name": "attachments", "label": "明细附件数组", "type": "file", "uiComponent": "upload", "multiple": true }
+  ],
+  "phases": [
+    {
+      "kind": "phase", "name": "goto-detail", "type": "sequential", "aiGoal": "打开明细行上传页",
+      "steps": [
+        { "kind": "step", "name": "navigate-detail", "action": "navigate", "url": "http://localhost:8088/detail-upload.html" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "detail-upload-loop", "type": "loop", "loopSource": "attachments", "rowIndexOffset": 1, "aiGoal": "逐行上传附件到各行独立 input（@rowindex={{rowIndex}}）",
+      "steps": [
+        { "kind": "step", "name": "upload-row", "action": "upload", "selector": "//tr[@rowindex='{{rowIndex}}']//input[@type='file']", "filePath": "{{path}}" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "verify", "type": "sequential", "aiGoal": "校验 3 个文件名已显示",
+      "steps": [
+        { "kind": "step", "name": "check-count", "action": "check", "detect": { "type": "selector_count", "selector": ".fn", "count": 3 }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-28" }
+      ]
+    }
+  ]
+}

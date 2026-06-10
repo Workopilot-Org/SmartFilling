@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "scriptId": "gt-09-upload-array",
+  "name": "GT09 文件上传（单文件 + 数组）",
+  "description": "upload(filePath 单路径字符串 / fillData 数组) / check(selector_text, selector_count)",
+  "fields": [
+    { "name": "F_FILE", "label": "单文件路径", "type": "file", "uiComponent": "upload" },
+    { "name": "F_FILES", "label": "多文件路径数组", "type": "file", "uiComponent": "upload", "multiple": true }
+  ],
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "upload-single",
+      "type": "sequential",
+      "aiGoal": "上传单个文件并校验文件名显示",
+      "steps": [
+        { "kind": "step", "name": "goto-upload", "action": "navigate", "url": "http://localhost:8088/upload.html" },
+        { "kind": "step", "name": "upload-one", "action": "upload", "selector": "#file-input", "filePath": "{{F_FILE}}" },
+        { "kind": "step", "name": "check-single", "action": "check", "detect": { "type": "selector_text", "selector": "#file-list", "keywords": ["upload-sample.txt"] }, "then": "nothing" }
+      ]
+    },
+    {
+      "kind": "phase",
+      "name": "upload-multi",
+      "type": "sequential",
+      "aiGoal": "上传多个文件（数组路径）并校验数量与文件名",
+      "steps": [
+        { "kind": "step", "name": "goto-upload2", "action": "navigate", "url": "http://localhost:8088/upload.html" },
+        { "kind": "step", "name": "upload-many", "action": "upload", "selector": "#file-input", "filePath": "{{F_FILES}}" },
+        { "kind": "step", "name": "check-count", "action": "check", "detect": { "type": "selector_count", "selector": ".fn", "count": 2 }, "then": "nothing" },
+        { "kind": "step", "name": "check-name2", "action": "check", "detect": { "type": "selector_text", "selector": "#file-list", "keywords": ["upload-sample2.txt"] }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-09" }
+      ]
+    }
+  ]
+}

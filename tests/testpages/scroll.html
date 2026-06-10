@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>滚动测试页</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  /* D⑪：可滚动容器（overflow:auto + 超视口内容）——批次9 selector-only scroll（ScrollIntoViewIfNeeded）载体。
+     固定高度 200px + overflow:auto，内部 30 行（远超 200px 可视区），目标项 #container-target 在第 25 行
+     初始位于容器可视区外，selector 滚动到此需触发容器内 ScrollIntoView。 */
+  #scroll-box {
+    height: 200px;
+    overflow: auto;
+    border: 2px solid #888;
+    padding: 8px;
+    width: 400px;
+    background: #fafafa;
+  }
+  #scroll-box .item { padding: 8px; border-bottom: 1px solid #eee; }
+</style>
+</head>
+<body>
+  <h1>滚动测试页</h1>
+
+  <h3>可滚动容器（selector-only scroll 载体）</h3>
+  <div id="scroll-box">
+    <div class="item">第 1 行</div>
+    <div class="item">第 2 行</div>
+    <div class="item">第 3 行</div>
+    <div class="item">第 4 行</div>
+    <div class="item">第 5 行</div>
+    <div class="item">第 6 行</div>
+    <div class="item">第 7 行</div>
+    <div class="item">第 8 行</div>
+    <div class="item">第 9 行</div>
+    <div class="item">第 10 行</div>
+    <div class="item">第 11 行</div>
+    <div class="item">第 12 行</div>
+    <div class="item">第 13 行</div>
+    <div class="item">第 14 行</div>
+    <div class="item">第 15 行</div>
+    <div class="item">第 16 行</div>
+    <div class="item">第 17 行</div>
+    <div class="item">第 18 行</div>
+    <div class="item">第 19 行</div>
+    <div class="item">第 20 行</div>
+    <div class="item">第 21 行</div>
+    <div class="item">第 22 行</div>
+    <div class="item">第 23 行</div>
+    <div class="item">第 24 行</div>
+    <div class="item" id="container-target" style="background:#d9f7d9;">第 25 行（容器内深处目标，selector 滚动到此）</div>
+    <div class="item">第 26 行</div>
+    <div class="item">第 27 行</div>
+    <div class="item">第 28 行</div>
+    <div class="item">第 29 行</div>
+    <div class="item">第 30 行</div>
+  </div>
+
+  <h3>页面级目标（页面滚动载体，direction 模式 + selector 模式）</h3>
+  <!-- 高占位把下方目标推到页面视口外（需整页滚动才可见） -->
+  <div style="height:2400px;background:#f5f5f5;">（占位区，把下方目标推到视口外）</div>
+  <div id="page-target" style="padding:12px;background:#fcd9d9;">页面深处目标（selector 滚动到此 / direction:bottom 滚动附近）</div>
+</body>
+</html>

@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "scriptId": "gt-26-scroll-selector-direction",
+  "name": "GT26 滚动（selector 滚到元素 + 各 direction）",
+  "description": "E⑬/P30：scroll selector 模式（滚到元素，原 golden 仅 direction:bottom 未覆盖）+ direction up/down/left/right/bottom/top / check(selector_visible)",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "scroll-selector",
+      "type": "sequential",
+      "aiGoal": "selector 模式滚到容器内目标与页面目标元素并校验可见",
+      "steps": [
+        { "kind": "step", "name": "goto-scroll", "action": "navigate", "url": "http://localhost:8088/scroll.html" },
+        { "kind": "step", "name": "scroll-container-target", "action": "scroll", "selector": "#container-target" },
+        { "kind": "step", "name": "check-container", "action": "check", "detect": { "type": "selector_visible", "selector": "#container-target" }, "then": "nothing" },
+        { "kind": "step", "name": "scroll-page-target", "action": "scroll", "selector": "#page-target" },
+        { "kind": "step", "name": "check-page", "action": "check", "detect": { "type": "selector_visible", "selector": "#page-target" }, "then": "nothing" }
+      ]
+    },
+    {
+      "kind": "phase",
+      "name": "scroll-directions",
+      "type": "sequential",
+      "aiGoal": "direction 模式各方向滚动（down/bottom/top/up/left/right）并校验",
+      "steps": [
+        { "kind": "step", "name": "goto-scroll2", "action": "navigate", "url": "http://localhost:8088/scroll.html" },
+        { "kind": "step", "name": "scroll-down", "action": "scroll", "direction": "down", "amount": 500 },
+        { "kind": "step", "name": "scroll-bottom", "action": "scroll", "direction": "bottom" },
+        { "kind": "step", "name": "check-bottom", "action": "check", "detect": { "type": "selector_visible", "selector": "#page-target" }, "then": "nothing" },
+        { "kind": "step", "name": "scroll-top", "action": "scroll", "direction": "top" },
+        { "kind": "step", "name": "scroll-up", "action": "scroll", "direction": "up", "amount": 100 },
+        { "kind": "step", "name": "scroll-left", "action": "scroll", "direction": "left", "amount": 100 },
+        { "kind": "step", "name": "scroll-right", "action": "scroll", "direction": "right", "amount": 100 },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-26" }
+      ]
+    }
+  ]
+}

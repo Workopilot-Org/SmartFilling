@@ -1,0 +1,15 @@
+# 构建产物
+validator/bin/
+validator/obj/
+harness/bin/
+harness/obj/
+__pycache__/
+*.pyc
+
+# 运行时日志副本（运行产物，不入库）
+tests_worker.log
+tests_serve.log
+tests_ddddocr.log
+
+# Worker 因 CWD 偶发产生的同名目录（截图应落 ../tests/artifacts）
+../SmartFilling.BackgroundWorker/tests/

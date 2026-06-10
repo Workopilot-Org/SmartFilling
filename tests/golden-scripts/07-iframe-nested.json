@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "scriptId": "gt-07-iframe-nested",
+  "name": "GT07 嵌套 iframe 操作",
+  "description": "形态 A：iframe selector 链（根→叶）/ fill+check 在 host/outer/nested / check(iframe_exists)",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "iframe-ops",
+      "type": "sequential",
+      "aiGoal": "在宿主、外层 iframe、嵌套 iframe 中分别填写并校验",
+      "steps": [
+        { "kind": "step", "name": "goto-host", "action": "navigate", "url": "http://localhost:8088/iframe-nested.html" },
+        { "kind": "step", "name": "wait-iframes", "action": "wait", "ms": 600 },
+        { "kind": "step", "name": "fill-host", "action": "fill", "selector": "#host-input", "value": "宿主值" },
+        { "kind": "step", "name": "fill-inner", "action": "fill", "selector": "#inner-input", "value": "内层值", "iframe": ["iframe#outer"] },
+        { "kind": "step", "name": "fill-deep", "action": "fill", "selector": "#deep-input", "value": "深层值", "iframe": ["iframe#outer", "iframe#nested"] },
+        { "kind": "step", "name": "check-deep", "action": "check", "detect": { "type": "selector_value", "selector": "#deep-input", "value": "深层值", "iframe": ["iframe#outer", "iframe#nested"] }, "then": "nothing" },
+        { "kind": "step", "name": "check-inner", "action": "check", "detect": { "type": "selector_value", "selector": "#inner-input", "value": "内层值", "iframe": ["iframe#outer"] }, "then": "nothing" },
+        { "kind": "step", "name": "check-host", "action": "check", "detect": { "type": "selector_value", "selector": "#host-input", "value": "宿主值" }, "then": "nothing" },
+        { "kind": "step", "name": "check-iframe-exists", "action": "check", "detect": { "type": "iframe_exists", "selector": "iframe#outer" }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-07" }
+      ]
+    }
+  ]
+}

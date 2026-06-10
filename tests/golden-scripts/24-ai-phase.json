@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "scriptId": "gt-24-ai-phase",
+  "name": "GT24 AI phase 自主填表（需服务，非确定性）",
+  "description": "ai phase：AI 自主完成点击+填写多步任务；maxAiTurns 8；烧 DashScope token，非确定性",
+  "fields": [
+    { "name": "F_NAME", "label": "姓名", "type": "string", "uiComponent": "input" }
+  ],
+  "phases": [
+    {
+      "kind": "phase", "name": "goto", "type": "sequential", "aiGoal": "打开基础表单页",
+      "steps": [
+        { "kind": "step", "name": "nav", "action": "navigate", "url": "http://localhost:8088/form-basic.html" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "ai-fill", "type": "ai", "aiGoal": "点击 btn-count 按钮一次，并在姓名输入框(f-name)填入：阶段AI", "maxAiTurns": 8,
+      "steps": [
+        { "kind": "step", "name": "click-btn", "action": "ai", "description": "点击 id 为 btn-count 的按钮", "selector": "#btn-count" },
+        { "kind": "step", "name": "fill-name", "action": "ai", "description": "在 id 为 f-name 的输入框填入文字：阶段AI", "field": "F_NAME", "value": "{{F_NAME}}" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "verify", "type": "sequential", "aiGoal": "校验 AI 操作结果",
+      "steps": [
+        { "kind": "step", "name": "check-name", "action": "check", "detect": { "type": "selector_value", "selector": "#f-name", "value": "阶段AI" }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-24" }
+      ]
+    }
+  ]
+}

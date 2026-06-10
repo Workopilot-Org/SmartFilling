@@ -1,0 +1,47 @@
+{
+  "version": 2,
+  "scriptId": "gt-10-loop-newrow",
+  "name": "GT10 循环填表（loopSource + new_row_appears + continue）",
+  "description": "loop phase / loopSource 嵌套数组 / new_row_appears / then continue / check(selector_count)",
+  "fields": [
+    { "name": "DETAILS", "label": "明细行", "type": "array", "uiComponent": "table", "fields": [
+      { "name": "name", "label": "名称", "type": "string" },
+      { "name": "qty", "label": "数量", "type": "number" }
+    ]}
+  ],
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "goto-table",
+      "type": "sequential",
+      "aiGoal": "打开表格循环测试页",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/table-loop.html" }
+      ]
+    },
+    {
+      "kind": "phase",
+      "name": "fill-rows",
+      "type": "loop",
+      "loopSource": "DETAILS",
+      "aiGoal": "按明细数组逐行填入名称数量并新增表格行",
+      "steps": [
+        { "kind": "step", "name": "fill-name", "action": "fill", "selector": "#in-name", "value": "{{name}}" },
+        { "kind": "step", "name": "fill-qty", "action": "fill", "selector": "#in-qty", "value": "{{qty}}" },
+        { "kind": "step", "name": "add-row", "action": "click", "selector": "#btn-add-row" },
+        { "kind": "step", "name": "check-new-row", "action": "check", "detect": { "type": "new_row_appears", "selector": "#data-table tbody tr" }, "then": "continue" }
+      ]
+    },
+    {
+      "kind": "phase",
+      "name": "verify",
+      "type": "sequential",
+      "aiGoal": "校验表格行数与内容",
+      "steps": [
+        { "kind": "step", "name": "check-row-count", "action": "check", "detect": { "type": "selector_count", "selector": "#data-table tbody tr", "count": 2 }, "then": "nothing" },
+        { "kind": "step", "name": "check-row2", "action": "check", "detect": { "type": "selector_text", "selector": "#data-table tbody tr:last-child .c-name", "keywords": ["香蕉"] }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-10" }
+      ]
+    }
+  ]
+}

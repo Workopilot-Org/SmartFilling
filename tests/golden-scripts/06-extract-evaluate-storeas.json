@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "scriptId": "gt-06-extract-evaluate-storeas",
+  "name": "GT06 数据提取+JS求值+变量存储+返回数据",
+  "description": "extract(property value/textContent/count/checked, extractType url/title, regex) / evaluate / storeAs / check(js) / returnData",
+  "fields": [],
+  "returnData": {
+    "orderNo": "{{orderNo}}",
+    "itemCount": "{{itemCount}}",
+    "sum": "{{sum}}",
+    "status": "{{status}}"
+  },
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "extract-and-eval",
+      "type": "sequential",
+      "aiGoal": "提取订单号/计数/勾选/标题/URL 并 JS 求值，校验变量存取",
+      "steps": [
+        { "kind": "step", "name": "goto-extract", "action": "navigate", "url": "http://localhost:8088/extract-result.html" },
+        { "kind": "step", "name": "ext-token", "action": "extract", "selector": "#hid-token", "property": "value", "storeAs": "token" },
+        { "kind": "step", "name": "ext-order", "action": "extract", "selector": "#box", "property": "textContent", "regex": "ORD-[0-9-]+", "storeAs": "orderNo" },
+        { "kind": "step", "name": "ext-count", "action": "extract", "selector": ".item", "property": "count", "storeAs": "itemCount" },
+        { "kind": "step", "name": "ext-checked", "action": "extract", "selector": "#cb-done", "property": "checked", "storeAs": "done" },
+        { "kind": "step", "name": "ext-title", "action": "extract", "extractType": "title", "storeAs": "pageTitle" },
+        { "kind": "step", "name": "ext-url", "action": "extract", "extractType": "url", "storeAs": "curUrl" },
+        { "kind": "step", "name": "eval-sum", "action": "evaluate", "code": "(1+2+3).toString()", "storeAs": "sum" },
+        { "kind": "step", "name": "eval-status", "action": "evaluate", "code": "document.querySelector('#box').dataset.status", "storeAs": "status" },
+        { "kind": "step", "name": "check-vars", "action": "check", "detect": { "type": "js", "check": "vars.sum === '6' && vars.itemCount === 4 && vars.token === 'ABC123' && vars.status === 'active'" }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-06" }
+      ]
+    }
+  ]
+}

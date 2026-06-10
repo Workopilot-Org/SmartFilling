@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "scriptId": "gt-25-upload-objarray",
+  "name": "GT25 文件上传（对象数组生产形态）",
+  "description": "E⑬：upload(filePath fillData 对象数组 [{name,path}] 生产形态——ConvertAttachmentUrls 产出形态) / ResolveUploadValue 对象数组分支 path key / check(selector_count,selector_text)",
+  "fields": [
+    { "name": "F_FILES", "label": "附件对象数组", "type": "file", "uiComponent": "upload", "multiple": true }
+  ],
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "upload-objarray",
+      "type": "sequential",
+      "aiGoal": "上传对象数组形态多文件并校验数量与文件名",
+      "steps": [
+        { "kind": "step", "name": "goto-upload", "action": "navigate", "url": "http://localhost:8088/upload.html" },
+        { "kind": "step", "name": "upload-objarray", "action": "upload", "selector": "#file-input", "filePath": "{{F_FILES}}" },
+        { "kind": "step", "name": "check-count", "action": "check", "detect": { "type": "selector_count", "selector": ".fn", "count": 2 }, "then": "nothing" },
+        { "kind": "step", "name": "check-name2", "action": "check", "detect": { "type": "selector_text", "selector": "#file-list", "keywords": ["upload-sample2.txt"] }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-25" }
+      ]
+    }
+  ]
+}

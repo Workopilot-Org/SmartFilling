@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "scriptId": "gt-04-login-flow-presskey",
+  "name": "GT04 登录全流程+按键提交",
+  "description": "fill×2 / pressKey(Enter 提交) / check(url_changed, selector_visible, url_contains)",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "login",
+      "type": "sequential",
+      "aiGoal": "填写账密并用回车提交，校验登录成功（URL变化+欢迎元素）",
+      "steps": [
+        { "kind": "step", "name": "goto-login", "action": "navigate", "url": "http://localhost:8088/login.html" },
+        { "kind": "step", "name": "fill-user", "action": "fill", "selector": "#username", "value": "admin" },
+        { "kind": "step", "name": "fill-pass", "action": "fill", "selector": "#password", "value": "123456" },
+        { "kind": "step", "name": "press-enter", "action": "pressKey", "selector": "#password", "key": "Enter" },
+        { "kind": "step", "name": "check-url-changed", "action": "check", "detect": { "type": "url_changed" }, "then": "nothing" },
+        { "kind": "step", "name": "check-welcome", "action": "check", "detect": { "type": "selector_visible", "selector": "#welcome" }, "then": "nothing" },
+        { "kind": "step", "name": "check-url-hash", "action": "check", "detect": { "type": "url_contains", "value": "#welcome" }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-04" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能填报系统</title>
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2">
+                <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                <path d="M2 17l10 5 10-5" />
+                <path d="M2 12l10 5 10-5" />
+            </svg>
+            <h1>智能填报系统</h1>
+        </header>
+
+        <nav class="tabs">
+            <button class="tab active" data-tab="record">录制模式</button>
+            <button class="tab" data-tab="fill">填报模式</button>
+            <button class="tab" data-tab="doc-manager">单据管理</button>
+        </nav>
+
+        <main>
+            <!-- 录制面板 -->
+            <div class="panel" id="record-panel">
+                <h2>新建录制任务</h2>
+                <div class="form-group">
+                    <label>单据类型</label>
+                    <input type="text" id="doc-type-input" placeholder="请输入单据类型，如：请假单、报销单">
+                </div>
+                <div class="form-group">
+                    <label>用户名（可选）</label>
+                    <input type="text" id="username" placeholder="登录用户名">
+                </div>
+                <div class="form-group">
+                    <label>密码（可选）</label>
+                    <input type="password" id="password" placeholder="登录密码">
+                </div>
+                <div class="form-group">
+                    <label>前置脚本（可选）</label>
+                    <select id="prerequisite-script">
+                        <option value="">(无) 直接开始</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>任务描述</label>
+                    <textarea id="task-desc" rows="3" placeholder="描述要完成的操作，如：填写请假单，请3天事假"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>附件上传（可选）</label>
+                    <div class="file-upload-area">
+                        <input type="file" id="record-file-input" multiple style="display: none;" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx,.txt">
+                        <button type="button" id="btn-select-record-files" class="secondary" onclick="document.getElementById('record-file-input').click()">选择附件</button>
+                        <span id="record-file-count" style="margin-left: 10px; color: #64748b;">未选择文件</span>
+                    </div>
+                    <div id="record-file-list" class="file-list" style="margin-top: 10px;"></div>
+                </div>
+                <div class="button-group">
+                    <button id="btn-start-record" class="primary">开始录制</button>
+                </div>
+                <!-- 录制完成后的保存确认 -->
+                <div id="save-confirmation" class="save-confirmation hidden">
+                    <h4>录制完成！是否保存此脚本？</h4>
+                    <div class="form-group">
+                        <label>脚本名称</label>
+                        <input type="text" id="script-name" placeholder="为脚本命名">
+                    </div>
+                    <div class="form-group">
+                        <label>注意事项/备注</label>
+                        <textarea id="script-notes" rows="2" placeholder="例如：必须要用管理员账号登录"></textarea>
+                    </div>
+                    <div class="save-actions">
+                        <button id="btn-save-script" class="primary success">保存脚本</button>
+                        <button id="btn-discard-script" class="secondary">放弃</button>
+                    </div>
+                </div>
+                <!-- 交互式帮助请求 -->
+                <div id="interactive-help" class="interactive-help hidden"
+                    style="border: 2px solid #f59e0b; background-color: #fffbeb; padding: 15px; margin-top: 15px; border-radius: 8px;">
+                    <h3 style="color: #d97706; margin-top: 0;">Agent 请求帮助</h3>
+                    <p id="help-question" style="margin-bottom: 10px; font-weight: 500; white-space: pre-wrap;"></p>
+                    <p style="margin-bottom: 8px; font-size: 12px; color: #92400e;">💡 定位元素时，可粘贴元素/父级/兄弟 HTML，或直接输入 selector（XPath/CSS），比 Accessibility Tree 更稳</p>
+                    <div class="form-group">
+                        <textarea id="help-response" rows="3" style="width: 100%; border: 1px solid #d97706;"
+                            placeholder="请输入您的指令；定位元素时可粘贴 HTML 或直接输入 selector"></textarea>
+                    </div>
+                    <button id="btn-send-help" class="primary" style="background-color: #d97706; border-color: #d97706;">发送指令</button>
+                </div>
+            </div>
+
+            <!-- 填报面板 -->
+            <div class="panel hidden" id="fill-panel">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="margin: 0;">智能填报</h2>
+                    <div id="chat-header-controls" style="display: flex; align-items: center; gap: 12px;" class="hidden">
+                        <button id="btn-back-to-selector" class="secondary" style="width: auto; padding: 6px 16px; font-size: 13px;">返回</button>
+                        <span id="chat-status-text" style="font-size: 13px; color: var(--text-muted);">对话进行中</span>
+                    </div>
+                </div>
+                <!-- 选择单据类型 -->
+                <div id="doc-selector" class="doc-selector">
+                    <div class="form-group">
+                        <label>选择单据类型</label>
+                        <select id="fill-doc-type">
+                            <option value="">加载中...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>用户名（可选）</label>
+                        <input type="text" id="fill-username" placeholder="登录用户名">
+                    </div>
+                    <div class="form-group">
+                        <label>密码（可选）</label>
+                        <input type="password" id="fill-password" placeholder="登录密码">
+                    </div>
+                    <div class="form-group">
+                        <label>数据收集需求描述（可选）</label>
+                        <textarea id="fill-data-prompt" rows="2" placeholder="用于对话收集阶段，例如：请特别关注请假事由的合规性"></textarea>
+                    </div>
+                    <button id="btn-start-chat" class="primary">开始对话</button>
+                </div>
+                <!-- 聊天区域 -->
+                <div id="chat-container" class="chat-container hidden">
+                    <div class="chat-box">
+                        <div class="chat-history" id="chat-history"></div>
+                        <div class="chat-attachments-area" style="padding: 12px; border-top: 1px solid var(--border-color);">
+                            <div style="margin-bottom: 8px;">
+                                <label style="font-size: 13px; font-weight: 500; color: var(--text-color);">附件（可选）</label>
+                            </div>
+                            <div class="file-upload-area">
+                                <input type="file" id="fill-file-input" multiple style="display: none;" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx,.txt">
+                                <button type="button" id="btn-select-fill-files" class="secondary" onclick="document.getElementById('fill-file-input').click()" style="padding: 6px 12px; font-size: 13px;">选择附件</button>
+                                <span id="fill-file-count" style="margin-left: 10px; color: #64748b; font-size: 13px;">未选择文件</span>
+                            </div>
+                            <div id="fill-file-list" class="file-list" style="margin-top: 8px;"></div>
+                        </div>
+                        <div class="chat-input-area">
+                            <input type="text" id="chat-input" placeholder="输入消息..." disabled>
+                            <button id="btn-send" disabled>发送</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 单据管理面板 -->
+            <div class="panel hidden" id="doc-manager">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
+                    <h2>单据管理</h2>
+                    <button id="btn-create-doc" class="primary" style="margin-left: auto; width: auto; padding: 12px 24px;">+ 新建单据</button>
+                </div>
+                <div id="doc-list-view">
+                    <div id="doc-list" class="doc-card-grid"></div>
+                </div>
+            </div>
+
+            <!-- 单据编辑弹窗 -->
+            <div id="doc-modal" class="modal hidden">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3 id="modal-title">新建单据</h3>
+                        <button class="close-btn" onclick="closeDocModal()">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label>单据名称</label>
+                            <input type="text" id="doc-name-input" placeholder="例如：月度请假申请流程">
+                        </div>
+                        <div class="form-group">
+                            <label>对话、数据处理提示词（可选）</label>
+                            <textarea id="doc-data-processing-prompts" rows="3" placeholder="用于聊天收集阶段的AI提示词"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>选择执行脚本 (按勾选顺序执行)</label>
+                            <div id="script-checkbox-list" class="checkbox-group"></div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button id="btn-modal-cancel" class="secondary">取消</button>
+                        <button id="btn-modal-save" class="primary">保存单据</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 录制预览区 -->
+            <aside class="panel preview" id="record-preview">
+                <div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                        <h3>状态</h3>
+                        <div style="display:flex;align-items:center;gap:8px">
+                            <span id="record-status-badge" class="status-badge idle">空闲</span>
+                            <button id="btn-stop-record" class="danger hidden" style="padding: 4px 12px; font-size: 12px;">停止</button>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <h3>实时截图</h3>
+                    <div class="screenshot-area">
+                        <img id="record-screenshot"
+                            src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MDAiIGhlaWdodD0iMjAwIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZjFmNWY5Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiM5NGEzYjgiIGRvbWluYW50LWJhc2VsaW5lPSJtaWRkbGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIj7mmoLml6DmiKrlm748L3RleHQ+PC9zdmc+"
+                            alt="截图预览">
+                    </div>
+                </div>
+                <div style="flex:1;display:flex;flex-direction:column;min-height:0">
+                    <h3>操作日志</h3>
+                    <div class="logs" id="record-logs">
+                        <div class="log-entry"><span class="timestamp">[系统]</span> 等待开始...</div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- 填报预览区 -->
+            <aside class="panel preview hidden" id="fill-preview">
+                <div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                        <h3>状态</h3>
+                        <div style="display:flex;align-items:center;gap:8px">
+                            <span id="fill-status-badge" class="status-badge idle">空闲</span>
+                            <span id="fill-result-text" class="hidden" style="font-size: 13px; color: var(--text-muted); margin-left: 6px;"></span>
+                            <button id="btn-stop-fill" class="danger hidden" style="padding: 4px 12px; font-size: 12px;">停止</button>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <h3>实时截图</h3>
+                    <div class="screenshot-area">
+                        <img id="fill-screenshot"
+                            src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MDAiIGhlaWdodD0iMjAwIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZjFmNWY5Ii8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiM5NGEzYjgiIGRvbWluYW50LWJhc2VsaW5lPSJtaWRkbGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIj7mmoLml6DmiKrlm748L3RleHQ+PC9zdmc+"
+                            alt="截图预览">
+                    </div>
+                </div>
+                <div style="flex:1;display:flex;flex-direction:column;min-height:0">
+                    <h3>操作日志</h3>
+                    <div class="logs" id="fill-logs">
+                        <div class="log-entry"><span class="timestamp">[系统]</span> 等待开始...</div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

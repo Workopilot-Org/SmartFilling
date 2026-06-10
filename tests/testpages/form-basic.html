@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>基础表单测试页</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  input, select, textarea { display:block; margin:6px 0; padding:6px; width:260px; }
+  button { padding:8px 16px; margin:6px 6px 0 0; }
+  #preview { margin-top:16px; padding:10px; background:#f5f5f5; min-height:30px; }
+  .row { padding:4px 0; border-bottom:1px solid #eee; }
+  #toggle-box { margin-top:10px; padding:10px; background:#d9f7d9; }
+</style>
+</head>
+<body>
+  <h1>基础表单测试页</h1>
+
+  <label>姓名 <input id="f-name" name="name" autocomplete="off"></label>
+  <label>备注 <textarea id="f-remark" name="remark" rows="2"></textarea></label>
+
+  <!-- D⑩：批次4 首次录制 format 验证载体（number/date input + ResolveFieldTypeAsync 现场 DOM 推断 Type） -->
+  <label>金额(number) <input type="number" id="f-amount" name="amount" autocomplete="off"></label>
+  <label>日期(date) <input type="date" id="f-date" name="date" autocomplete="off"></label>
+
+  <label>颜色
+    <select id="f-color" name="color">
+      <option value="">请选择</option>
+      <option value="R">红色</option>
+      <option value="G">绿色</option>
+      <option value="B">蓝色</option>
+    </select>
+  </label>
+
+  <label><input type="checkbox" id="f-agree" name="agree"> 同意条款</label>
+
+  <label>性别</label>
+  <label><input type="radio" name="gender" value="m"> 男</label>
+  <label><input type="radio" name="gender" value="f"> 女</label>
+
+  <button id="btn-count">点击计数 (0)</button>
+  <button id="btn-toggle">切换显示</button>
+
+  <div id="toggle-box">切换框可见</div>
+
+  <h3>实时预览</h3>
+  <div id="preview">姓名：-，颜色代码：</div>
+
+  <h3>行列表（3 行）</h3>
+  <div id="row-list">
+    <div class="row">第 1 行</div>
+    <div class="row">第 2 行</div>
+    <div class="row">第 3 行</div>
+  </div>
+  <button id="btn-add-row">新增一行</button>
+
+<script>
+  var count = 0;
+  var preview = document.getElementById('preview');
+  function updatePreview(){
+    var n = document.getElementById('f-name').value || '-';
+    var c = document.getElementById('f-color').value || '';
+    preview.textContent = '姓名：' + n + '，颜色代码：' + c;
+  }
+  ['f-name','f-remark','f-color'].forEach(function(id){
+    document.getElementById(id).addEventListener('input', updatePreview);
+    document.getElementById(id).addEventListener('change', updatePreview);
+  });
+  document.getElementById('btn-count').addEventListener('click', function(){
+    count++;
+    this.textContent = '点击计数 (' + count + ')';
+  });
+  document.getElementById('btn-toggle').addEventListener('click', function(){
+    var b = document.getElementById('toggle-box');
+    b.style.display = (b.style.display === 'none' ? 'block' : 'none');
+  });
+  document.getElementById('btn-add-row').addEventListener('click', function(){
+    var list = document.getElementById('row-list');
+    var div = document.createElement('div');
+    div.className = 'row';
+    div.textContent = '第 ' + (list.children.length + 1) + ' 行';
+    list.appendChild(div);
+  });
+</script>
+</body>
+</html>

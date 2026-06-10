@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "scriptId": "gt-02-fill-select-check",
+  "name": "GT02 填写+下拉选择+值检测",
+  "description": "smoke: fill / select(value) / check(selector_value, selector_text)",
+  "fields": [
+    { "name": "F_NAME", "label": "姓名", "type": "string", "uiComponent": "input" }
+  ],
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "fill-form",
+      "type": "sequential",
+      "aiGoal": "填写基础表单姓名与颜色并校验输入值与实时预览",
+      "steps": [
+        { "kind": "step", "name": "goto-form", "action": "navigate", "url": "http://localhost:8088/form-basic.html" },
+        { "kind": "step", "name": "fill-name", "action": "fill", "selector": "#f-name", "value": "{{F_NAME}}", "field": "F_NAME" },
+        { "kind": "step", "name": "select-color", "action": "select", "selector": "#f-color", "value": "G", "matchBy": "value" },
+        { "kind": "step", "name": "check-color-value", "action": "check", "detect": { "type": "selector_value", "selector": "#f-color", "value": "G" }, "then": "nothing" },
+        { "kind": "step", "name": "check-preview-text", "action": "check", "detect": { "type": "selector_text", "selector": "#preview", "keywords": ["颜色代码：G"] }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-02" }
+      ]
+    }
+  ]
+}

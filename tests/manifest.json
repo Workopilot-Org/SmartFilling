@@ -1,0 +1,220 @@
+{
+  "_comment": "golden 套件清单：file=脚本文件名；fillData=填报数据；expect=completed/failed（failed=预期失败路径）；category=deterministic/semi(半确定性)/service(需DashScope,非确定性)；covers=覆盖点。runner 按此顺序回放。",
+  "scripts": [
+    {
+      "file": "01-navigate-wait-screenshot.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "navigate/wait(ms)/check(url_contains)/screenshot(fullPage)"
+    },
+    {
+      "file": "02-fill-select-check.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "fillData": {
+        "F_NAME": "张三"
+      },
+      "covers": "fill/select(value)/check(selector_value,selector_text)"
+    },
+    {
+      "file": "03-click-check.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "click/check(selector_text,not selector_visible)"
+    },
+    {
+      "file": "04-login-flow-presskey.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "fill/pressKey(Enter)/check(url_changed,selector_visible,url_contains)"
+    },
+    {
+      "file": "05-interact-type-select-detect.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "doubleClick/hover/scroll(direction,element)/type/select(label,index)/check(selector_count,selector_checked,selector_selected,selector_visible)"
+    },
+    {
+      "file": "06-extract-evaluate-storeas.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "expectReturnData": { "sum": "6", "itemCount": 4 },
+      "covers": "extract(property value/textContent/count/checked, url, title, regex)/evaluate/storeAs/check(js)/returnData"
+    },
+    {
+      "file": "07-iframe-nested.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "iframeConfig 嵌套/fill+check host/outer/nested/check(iframe_exists)"
+    },
+    {
+      "file": "08-dialog-presetup.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "preSetup(auto_accept/auto_dismiss)/handleDialog(延迟弹窗)/check(dialog_contains,selector_text,all组合)"
+    },
+    {
+      "file": "09-upload-array.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "fillData": {
+        "F_FILE": "../tests/testpages/upload-sample.txt",
+        "F_FILES": [
+          "../tests/testpages/upload-sample.txt",
+          "../tests/testpages/upload-sample2.txt"
+        ]
+      },
+      "covers": "upload(filePath 单路径 / fillData 数组)/check(selector_text,selector_count)"
+    },
+    {
+      "file": "10-loop-newrow.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "fillData": {
+        "DETAILS": [
+          {
+            "name": "苹果",
+            "qty": "3"
+          },
+          {
+            "name": "香蕉",
+            "qty": "5"
+          }
+        ]
+      },
+      "covers": "loop phase/loopSource 嵌套数组/new_row_appears/then continue/check(selector_count,selector_text)"
+    },
+    {
+      "file": "11-goto-phase-success.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "check then goto(toPhase)/check then phase_success"
+    },
+    {
+      "file": "12-script-success.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "check then script_success(提前结束，后续 phase 不执行)"
+    },
+    {
+      "file": "13-script-fail.json",
+      "category": "deterministic",
+      "expect": "failed",
+      "covers": "check then script_fail(脚本失败终止)"
+    },
+    {
+      "file": "14-phase-error-step-error.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "check then phase_error(phase onError skip)/check then step_error(step onError skip)"
+    },
+    {
+      "file": "15-phase-rerun.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "check then phase_rerun(重跑整个 phase)"
+    },
+    {
+      "file": "16-loop-row-rerun-break.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "fillData": {
+        "ROWS": [
+          ""
+        ]
+      },
+      "covers": "loop 内 check then row_rerun/check then break"
+    },
+    {
+      "file": "17-nav-screenshot-detect.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "fillData": {
+        "F_X": "有值"
+      },
+      "covers": "goBack/reload/wait(until)/screenshot(element,viewport,storeContent dataUrl+both)/check(page_contains,selector_exists,selector_enabled,selector_gone,data_exists)"
+    },
+    {
+      "file": "18-multi-tab.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "switchTab/closeTab/check(page_exists,url_contains)/extract(url)"
+    },
+    {
+      "file": "19-captcha-text.json",
+      "category": "semi",
+      "expect": "completed",
+      "covers": "captcha text (OCR 半确定性)"
+    },
+    {
+      "file": "20-captcha-slide.json",
+      "category": "semi",
+      "expect": "completed",
+      "covers": "captcha slide (slide_match 半确定性)"
+    },
+    {
+      "file": "21-captcha-pixel.json",
+      "category": "semi",
+      "expect": "completed",
+      "covers": "captcha pixel (slide_comparison 半确定性)"
+    },
+    {
+      "file": "22-captcha-click.json",
+      "category": "semi",
+      "expect": "completed",
+      "covers": "captcha click (detection 半确定性)"
+    },
+    {
+      "file": "23-ai-action.json",
+      "category": "service",
+      "expect": "completed",
+      "covers": "ai action（需 DashScope，非确定性）"
+    },
+    {
+      "file": "24-ai-phase.json",
+      "category": "service",
+      "expect": "completed",
+      "fillData": {
+        "F_NAME": "阶段AI"
+      },
+      "covers": "ai phase（需 DashScope，非确定性）"
+    },
+    {
+      "file": "25-upload-objarray.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "fillData": {
+        "F_FILES": [
+          { "name": "upload-sample.txt", "path": "../tests/testpages/upload-sample.txt" },
+          { "name": "upload-sample2.txt", "path": "../tests/testpages/upload-sample2.txt" }
+        ]
+      },
+      "covers": "E⑬：upload fillData 对象数组（生产形态 ConvertAttachmentUrls 产出）/ ResolveUploadValue 对象数组分支 path key / check(selector_count,selector_text)"
+    },
+    {
+      "file": "26-scroll-selector-direction.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "E⑬/P30：scroll selector 模式（滚到元素，原 golden 仅 direction:bottom）+ direction down/bottom/top/up/left/right / check(selector_visible)"
+    },
+    {
+      "file": "27-ai-multi-storeas.json",
+      "category": "service",
+      "expect": "completed",
+      "covers": "E⑬ + 调研#9：ai action 对象 storeAs 多变量 / StoreVars value=JsonElement(Object) + done.result 字符串解析多拆分（需 DashScope，非确定性）"
+    },
+    {
+      "file": "28-detail-row-upload.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "fillData": {
+        "attachments": [
+          { "name": "a1.txt", "path": "../tests/testpages/upload-sample.txt" },
+          { "name": "a2.txt", "path": "../tests/testpages/upload-sample2.txt" },
+          { "name": "a3.txt", "path": "../tests/testpages/upload-sample.txt" }
+        ]
+      },
+      "covers": "F/D3：loop(loopSource=attachments) 逐行 upload + selector @rowindex={{rowIndex}} + filePath={{path}} 回放（rowIndexOffset=1，验证录制期 ParametrizeRowIndex 产出的 {{rowIndex}} selector 能正确回放）"
+    }
+  ]
+}

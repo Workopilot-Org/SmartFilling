@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>对话框测试页</title>
+<style>body{font-family:sans-serif;margin:24px} button{padding:8px 16px;margin:6px}</style>
+</head>
+<body>
+  <h1>对话框测试页</h1>
+  <button id="btn-confirm" onclick="onConfirm()">确认对话框</button>
+  <div>确认结果：<span id="confirm-result">未触发</span></div>
+
+  <button id="btn-alert" onclick="onAlert()">警告对话框</button>
+  <div>警告结果：<span id="alert-done">未触发</span></div>
+
+  <button id="btn-delayed" onclick="onDelayed()">延迟弹窗（2500ms）</button>
+  <div>延迟结果：<span id="delayed-done">未触发</span></div>
+
+<script>
+  function onConfirm(){
+    document.getElementById('confirm-result').textContent = confirm('确认删除该项？') ? '已确认' : '已取消';
+  }
+  function onAlert(){
+    alert('操作完成：保存成功');
+    document.getElementById('alert-done').textContent = '已关闭';
+  }
+  function onDelayed(){
+    setTimeout(function(){
+      alert('延迟弹窗：处理完成');
+      document.getElementById('delayed-done').textContent = '延迟已关闭';
+    }, 2500);
+  }
+</script>
+</body>
+</html>

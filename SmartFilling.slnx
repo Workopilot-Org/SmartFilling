@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="SmartFilling.App/SmartFilling.App.csproj" />
+  <Project Path="SmartFilling.App.Tests/SmartFilling.App.Tests.csproj" />
+  <Project Path="SmartFilling.BackgroundWorker/SmartFilling.BackgroundWorker.csproj" />
+  <Project Path="SmartFilling.BackgroundWorker.Tests/SmartFilling.BackgroundWorker.Tests.csproj" />
+  <Project Path="SmartFilling.Engine.Tests/SmartFilling.Engine.Tests.csproj" />
+  <Project Path="SmartFilling.Engine/SmartFilling.Engine.csproj" />
+</Solution>

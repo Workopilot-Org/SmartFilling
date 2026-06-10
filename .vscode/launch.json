@@ -1,0 +1,31 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "C#: SmartFilling.App",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}\\SmartFilling.App\\SmartFilling.App.csproj",
+            "launchConfigurationId": "TargetFramework=;http"
+        },
+        {
+            "name": "C#: SmartFilling.BackgroundWorker",
+            "type": "dotnet",
+            "request": "launch",
+            "projectPath": "${workspaceFolder}\\SmartFilling.BackgroundWorker\\SmartFilling.BackgroundWorker.csproj",
+            "launchConfigurationId": "TargetFramework=;http"
+        }
+    ],
+    "compounds": [
+        {
+            "name": "C#: App + Worker",
+            "configurations": [
+                "C#: SmartFilling.App",
+                "C#: SmartFilling.BackgroundWorker"
+            ]
+        }
+    ]
+}

@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "scriptId": "gt-16-loop-row-rerun-break",
+  "name": "GT16 控制流：loop 内 row_rerun 重跑当前行 + break 退出",
+  "description": "loop 内 check then row_rerun（未满足重跑当前行）/ check then break（满足退出）；校验行计数器终值=2",
+  "fields": [
+    { "name": "ROWS", "label": "驱动行", "type": "array", "items": { "type": "string" } }
+  ],
+  "phases": [
+    {
+      "kind": "phase", "name": "goto", "type": "sequential", "aiGoal": "打开控制流测试页",
+      "steps": [
+        { "kind": "step", "name": "nav", "action": "navigate", "url": "http://localhost:8088/control.html" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "loop1", "type": "loop", "loopSource": "ROWS", "aiGoal": "单行循环：行计数器未达 2 则 row_rerun，达 2 则 break",
+      "steps": [
+        { "kind": "step", "name": "inc", "action": "evaluate", "code": "(function(){var e=document.getElementById('row-counter');var n=parseInt(e.textContent||'0')+1;e.textContent=n.toString();return n.toString();})()", "storeAs": "rowAttempt" },
+        { "kind": "step", "name": "rerun-check", "action": "check", "detect": { "type": "js", "check": "Number(vars.rowAttempt) < 2" }, "then": "row_rerun" },
+        { "kind": "step", "name": "done-check", "action": "check", "detect": { "type": "js", "check": "Number(vars.rowAttempt) >= 2" }, "then": "break" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "verify", "type": "sequential", "aiGoal": "校验行计数器终值为 2（即当前行重跑过一次）",
+      "steps": [
+        { "kind": "step", "name": "check-row-counter", "action": "check", "detect": { "type": "selector_text", "selector": "#row-counter", "keywords": ["2"] }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-16" }
+      ]
+    }
+  ]
+}

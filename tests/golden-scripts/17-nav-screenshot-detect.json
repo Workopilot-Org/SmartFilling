@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "scriptId": "gt-17-nav-screenshot-detect",
+  "name": "GT17 导航回退/刷新 + 截图变体 + 剩余 detect",
+  "description": "goBack/reload/wait(until)/screenshot(element,viewport,storeContent dataUrl+both) + check(page_contains,selector_exists,selector_enabled,selector_gone,data_exists)",
+  "fields": [
+    { "name": "F_X", "label": "测试值", "type": "string", "uiComponent": "input" }
+  ],
+  "phases": [
+    {
+      "kind": "phase", "name": "nav-and-detect", "type": "sequential", "aiGoal": "导航到登录页，校验页面存在/元素存在/可用/数据存在等检测",
+      "steps": [
+        { "kind": "step", "name": "goto-login", "action": "navigate", "url": "http://localhost:8088/login.html" },
+        { "kind": "step", "name": "check-page-contains", "action": "check", "detect": { "type": "page_contains", "keywords": ["登录测试页"] }, "then": "nothing" },
+        { "kind": "step", "name": "check-exists", "action": "check", "detect": { "type": "selector_exists", "selector": "#login-btn" }, "then": "nothing" },
+        { "kind": "step", "name": "check-enabled", "action": "check", "detect": { "type": "selector_enabled", "selector": "#login-btn" }, "then": "nothing" },
+        { "kind": "step", "name": "check-gone", "action": "check", "detect": { "type": "selector_gone", "selector": "#never-exists-xyz" }, "then": "nothing" },
+        { "kind": "step", "name": "check-data-exists", "action": "check", "detect": { "type": "data_exists", "field": "F_X" }, "then": "nothing" },
+        { "kind": "step", "name": "check-data-missing", "action": "check", "detect": { "not": { "type": "data_exists", "field": "F_MISSING" } }, "then": "nothing" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "back-reload", "type": "sequential", "aiGoal": "导航到另一页后回退与刷新，校验 URL 与内容",
+      "steps": [
+        { "kind": "step", "name": "goto-form", "action": "navigate", "url": "http://localhost:8088/form-basic.html" },
+        { "kind": "step", "name": "check-form-url", "action": "check", "detect": { "type": "url_contains", "value": "form-basic" }, "then": "nothing" },
+        { "kind": "step", "name": "go-back", "action": "goBack" },
+        { "kind": "step", "name": "check-back-login", "action": "check", "detect": { "type": "url_contains", "value": "login" }, "then": "nothing" },
+        { "kind": "step", "name": "reload-page", "action": "reload" },
+        { "kind": "step", "name": "check-after-reload", "action": "check", "detect": { "type": "page_contains", "keywords": ["登录测试页"] }, "then": "nothing" },
+        { "kind": "step", "name": "wait-btn", "action": "wait", "until": { "type": "selector_visible", "selector": "#login-btn" }, "timeout": 5000 }
+      ]
+    },
+    {
+      "kind": "phase", "name": "shots", "type": "sequential", "aiGoal": "测试截图类型与存储内容变体",
+      "steps": [
+        { "kind": "step", "name": "shot-element-both", "action": "screenshot", "screenshotType": "element", "selector": "#login-btn", "storeAs": "shotBtn", "storeContent": "both" },
+        { "kind": "step", "name": "check-shot-both", "action": "check", "detect": { "type": "js", "check": "vars.shotBtn && vars.shotBtn.path && vars.shotBtn.dataUrl" }, "then": "nothing" },
+        { "kind": "step", "name": "shot-dataurl", "action": "screenshot", "screenshotType": "element", "selector": "#login-btn", "storeAs": "shotData", "storeContent": "dataUrl" },
+        { "kind": "step", "name": "check-shot-dataurl", "action": "check", "detect": { "type": "js", "check": "vars.shotData && vars.shotData.indexOf('data:image') === 0" }, "then": "nothing" },
+        { "kind": "step", "name": "shot-viewport", "action": "screenshot", "folder": "../tests/artifacts/shots", "filename": "gt-17-viewport" },
+        { "kind": "step", "name": "shot-fullpage", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-17" }
+      ]
+    }
+  ]
+}

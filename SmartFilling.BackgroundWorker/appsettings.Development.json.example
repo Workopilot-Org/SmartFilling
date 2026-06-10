@@ -1,0 +1,24 @@
+{
+  "_comment": "复制为 appsettings.Development.json 并填入真实值（Development.json 在 .gitignore，不入库）。仅列必填/常用段，完整结构见 appsettings.json。",
+  "AiProvider": {
+    "_comment2": "ApiKey 缺失时 Worker 不拒启动，但 AI fallback / ai action / ai phase 路径会失败（确定性填报无需 key）。建议填。",
+    "ApiKey": "",
+    "ModelId": "deepseek-v3.2",
+    "Endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "CircuitBreakerThreshold": 5
+  },
+  "WsClient": {
+    "_comment3": "【WS 模式必填】ServerUrl=平台 WS 地址、ClientId=本 Worker 设备 ID。HTTP 模式（WorkerOptions.TaskMode=HTTP）可不填。",
+    "ServerUrl": "",
+    "ClientId": "",
+    "HeartbeatIntervalSeconds": 30,
+    "ReconnectIntervalSeconds": 10
+  },
+  "Platform": {
+    "_comment4": "JavaApiUrl=Java 平台地址（脚本下发 / 回调）；AttachmentBaseUrl=附件下载基址（HTTP 模式指向 App）。ApiKey 为平台鉴权 key。",
+    "JavaApiUrl": "",
+    "AttachmentBaseUrl": "http://localhost:5000",
+    "ApiKey": "",
+    "DefaultTimeoutSeconds": 30
+  }
+}

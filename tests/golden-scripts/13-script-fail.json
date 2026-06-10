@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "scriptId": "gt-13-script-fail",
+  "name": "GT13 控制流：script_fail 终止脚本（预期失败）",
+  "description": "check then script_fail 使脚本以失败终止；expect=failed",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase", "name": "p1", "type": "sequential", "aiGoal": "触发 script_fail 终止",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/control.html" },
+        { "kind": "step", "name": "fail", "action": "check", "detect": { "type": "always" }, "then": "script_fail", "message": "预期失败：script_fail 测试" }
+      ]
+    }
+  ]
+}

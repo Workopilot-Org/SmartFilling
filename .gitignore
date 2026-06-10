@@ -1,0 +1,38 @@
+# 构建
+bin/
+obj/
+.playwright/
+
+# 运行时生成
+uploads/
+screenshots/
+logs/
+data/
+*.log
+
+# 敏感配置（含真实密钥和 URL）
+appsettings.Development.json
+
+# IDE / 工具
+.vs/
+.claude/
+*.user
+*.suo
+
+# Python
+__pycache__/
+*.pyc
+
+# 测试
+TestResults/
+*.trx
+
+# 系统
+Thumbs.db
+.DS_Store
+
+# 根目录文档（全部不提交）
+/*.md
+
+# 设计文档独立仓库（不公开，单独 git 管理，见 design-docs/）
+design-docs/

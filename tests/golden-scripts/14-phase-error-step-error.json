@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "scriptId": "gt-14-phase-error-step-error",
+  "name": "GT14 控制流：phase_error 与 step_error 配合 onError skip 恢复",
+  "description": "check then phase_error（phase onError skip 跳到下一 phase）/ check then step_error（step onError skip 继续后续 step）",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase", "name": "p1", "type": "sequential", "onError": "skip", "aiGoal": "触发 phase_error，靠 phase onError skip 恢复",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/control.html" },
+        { "kind": "step", "name": "pe", "action": "check", "detect": { "type": "always" }, "then": "phase_error", "message": "phase_error 测试" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "p2", "type": "sequential", "aiGoal": "触发 step_error 靠 step onError skip 恢复，并校验恢复后继续执行",
+      "steps": [
+        { "kind": "step", "name": "log-recover", "action": "evaluate", "code": "document.getElementById('log').textContent='recovered;'" },
+        { "kind": "step", "name": "se", "action": "check", "detect": { "type": "always" }, "then": "step_error", "onError": "skip", "message": "step_error 测试" },
+        { "kind": "step", "name": "log-after", "action": "evaluate", "code": "document.getElementById('log').textContent+='after;'" },
+        { "kind": "step", "name": "check-log", "action": "check", "detect": { "type": "selector_text", "selector": "#log", "keywords": ["recovered;after;"] }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-14" }
+      ]
+    }
+  ]
+}

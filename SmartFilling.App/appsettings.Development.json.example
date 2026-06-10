@@ -1,0 +1,16 @@
+{
+  "_comment": "复制为 appsettings.Development.json 并填入真实值（Development.json 在 .gitignore，不入库）。仅列必填/常用段，完整结构见 appsettings.json。AiProvider.ApiKey 必填——App 启动时为空会直接拒启动（Program.cs 校验）；AI fallback / ai action / ai phase 均需。",
+  "AiProvider": {
+    "ApiKey": "",
+    "ModelId": "deepseek-v3.2",
+    "Endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  },
+  "Platform": {
+    "_comment2": "对接业务平台（填报脚本下发 / 单据创建）。NetApiUrl=.NET 平台、JavaApiUrl=Java 平台，按部署填其一或两者；ApiKey 为平台鉴权 key。",
+    "NetApiUrl": "",
+    "JavaApiUrl": "",
+    "ApiKey": "",
+    "DefaultTimeoutSeconds": 30,
+    "ClassificationPollIntervalMs": 5000
+  }
+}

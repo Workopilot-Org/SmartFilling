@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "scriptId": "gt-15-phase-rerun",
+  "name": "GT15 控制流：phase_rerun 重跑整个 phase（计数器驱动）",
+  "description": "check then phase_rerun 在条件未满足时重跑整个 phase，满足后 phase_success；校验计数器终值=2。navigate 在独立 phase，避免 rerun 刷新页面重置计数器。",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase", "name": "setup", "type": "sequential", "aiGoal": "打开控制流测试页（仅一次，不参与 rerun）",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/control.html" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "pr", "type": "sequential", "aiGoal": "每次自增计数器，未达 2 则 phase_rerun 重跑整个 phase",
+      "steps": [
+        { "kind": "step", "name": "inc", "action": "evaluate", "code": "(function(){var e=document.getElementById('counter');var n=parseInt(e.textContent||'0')+1;e.textContent=n.toString();return n.toString();})()", "storeAs": "attempt" },
+        { "kind": "step", "name": "rerun-check", "action": "check", "detect": { "type": "js", "check": "Number(vars.attempt) < 2" }, "then": "phase_rerun" },
+        { "kind": "step", "name": "done-check", "action": "check", "detect": { "type": "js", "check": "Number(vars.attempt) >= 2" }, "then": "phase_success" }
+      ]
+    },
+    {
+      "kind": "phase", "name": "verify", "type": "sequential", "aiGoal": "校验计数器终值为 2（即 phase 重跑过一次）",
+      "steps": [
+        { "kind": "step", "name": "check-counter", "action": "check", "detect": { "type": "selector_text", "selector": "#counter", "keywords": ["2"] }, "then": "nothing" },
+        { "kind": "step", "name": "shot", "action": "screenshot", "screenshotType": "fullPage", "folder": "../tests/artifacts/shots", "filename": "gt-15" }
+      ]
+    }
+  ]
+}

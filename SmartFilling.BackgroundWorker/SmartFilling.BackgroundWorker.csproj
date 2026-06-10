@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.25" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SmartFilling.Engine\SmartFilling.Engine.csproj" />
+  </ItemGroup>
+
+  <!-- DEC-3 层2：AutomationWsClient.BuildFillDataAndDownloadAttachmentsAsync 提为 internal 供 Worker.Tests 接线测试（Engine.csproj:19 有先例） -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="SmartFilling.BackgroundWorker.Tests" />
+  </ItemGroup>
+
+</Project>
