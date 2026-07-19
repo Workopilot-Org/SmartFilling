@@ -31,8 +31,12 @@ TestResults/
 Thumbs.db
 .DS_Store
 
-# 根目录文档（全部不提交）
+# 根目录文档（全部不提交；开源必备文件例外）
 /*.md
+!README.md
+!CONTRIBUTING.md
+!SECURITY.md
+!COMMERCIAL.md
 
 # 设计文档独立仓库（不公开，单独 git 管理，见 design-docs/）
 design-docs/
