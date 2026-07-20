@@ -8,7 +8,7 @@
 
 提交 PR 前，请通过以下方式获取并签署 CLA：
 
-- 联系邮箱：`cla@workopilot.com`
+- 联系邮箱：`zheng.yang@workopilot.com`
 
 ## 如何贡献
 
