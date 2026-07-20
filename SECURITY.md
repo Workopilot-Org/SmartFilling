@@ -4,7 +4,7 @@
 
 如果您发现了安全漏洞，**请不要公开提交 Issue**。请通过以下方式私下报告：
 
-- 邮箱：`security@workopilot.com`
+- 邮箱：`zheng.yang@workopilot.com`
 
 我们会在收到报告后尽快处理并回复。
 

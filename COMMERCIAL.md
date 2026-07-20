@@ -16,6 +16,6 @@
 
 如需购买商业授权，请联系：
 
-- 邮箱：`commercial@workopilot.com`
+- 邮箱：`zheng.yang@workopilot.com`
 
 请在邮件中说明您的公司名称、使用场景和预计规模，我们将为您提供授权方案和报价。

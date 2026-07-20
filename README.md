@@ -63,7 +63,7 @@ dotnet run
 本项目采用 **PolyForm Noncommercial License 1.0.0**。
 
 - **非商业使用**：个人学习、研究、非盈利组织使用免费
-- **商业使用**：需购买商业授权，请联系 `commercial@workopilot.com`
+- **商业使用**：需购买商业授权，请联系 `zheng.yang@workopilot.com`
 
 详见 [LICENSE](LICENSE) 和 [COMMERCIAL.md](COMMERCIAL.md)。
 
