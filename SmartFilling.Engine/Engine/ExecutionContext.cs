@@ -20,6 +20,8 @@ public class ExecutionContext
     public List<Dictionary<string, object>> ScopeChain { get; } = new(); // 作用域栈
     /// <summary>目标链栈（改动6.4）：栈底=script.Description，每个 phase 入口 push AiGoal/出口 pop。AI fallback instruction 展开整体→外层→当前目标。</summary>
     public Stack<string> GoalStack { get; } = new();
+    /// <summary>new_row_appears 行数基线栈（DC13，P12 方式 A 根治 2026-07-23：原塞 vars[_lastRowCountStack] 移出 vars 到独立字段——纯引擎内部状态，不进 vars 故用户 storeAs/占位符/字段名都碰不到，根治 storeAs="_lastRowCountStack" 遮蔽引擎栈致 new_row_appears silent）。每行迭代 Push、出口 Pop，嵌套 loop 各自独立栈层（Peek 取当前 loop 基线）。照 GoalStack 独立字段先例。</summary>
+    public Stack<int> RowBaselineStack { get; } = new();
 
     // AI 统计累积
     public int AiSteps { get; set; }

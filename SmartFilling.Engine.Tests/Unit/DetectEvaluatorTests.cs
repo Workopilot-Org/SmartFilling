@@ -41,14 +41,16 @@ public class DetectEvaluatorTests
         DetectCondition detect,
         string url = "about:blank",
         Dictionary<string, object>? vars = null,
-        List<Dictionary<string, object>>? scopeChain = null)
+        List<Dictionary<string, object>>? scopeChain = null,
+        Stack<int>? rowBaselineStack = null)  // 改动13：DetectEvaluator.EvaluateAsync 签名加 Stack<int>（_lastRowCountStack 移出 vars）；new_row_appears 测试传值，其余默认空栈
     {
         var evaluator = new DetectEvaluator(new NullLogger());
         CreateMockPage(out var page, url);
         var script = new ScriptV2();
         vars ??= new Dictionary<string, object>();
         scopeChain ??= new List<Dictionary<string, object>>();
-        return evaluator.EvaluateAsync(detect, page, script, null, vars, scopeChain);
+        rowBaselineStack ??= new Stack<int>();
+        return evaluator.EvaluateAsync(detect, page, script, null, vars, scopeChain, rowBaselineStack);
     }
 
     // =====================================================================

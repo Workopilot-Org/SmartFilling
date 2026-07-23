@@ -6,7 +6,7 @@ namespace SmartFilling.Engine.Tests.Unit;
 /// <summary>
 /// a-a-4 DC9 + DC14 schema 架构挡测试（silent 防御，经生产 LoadFromJson 反序列化路径）。
 /// DC9：new_row_appears selector 必填（detectConditionFull allOf if/then）。
-/// DC14：sequential/ai phase 不设 _lastRowCount 基线 → check new_row_appears silent 失效，schema allOf 合并（stepNode + detect→NoNewRow）挡。
+/// DC14：sequential/ai phase 不设 RowBaselineStack 基线 → check new_row_appears silent 失效，schema allOf 合并（stepNode + detect→NoNewRow）挡。
 /// 断言验值不只验状态：拒绝时 errors 含 new_row_appears（不只验 Throws）；合法场景通过。
 /// ⚠️ DC14 allOf 同字段 $ref intersection 是 JsonSchema.NET 验证器依赖，须实证（防 schema 看似挡了但验证器合并错漏挡 → silent）。
 /// </summary>
@@ -46,7 +46,7 @@ public class NewRowAppearsSchemaTests
     [Fact]
     public void DC14_SequentialPhase_NewRowAppears_Rejected()
     {
-        // DC14：sequential phase + check new_row_appears → schema allOf（stepNode + detect→NoNewRow）挡（sequential 不设 _lastRowCount 基线 → silent 失效）
+        // DC14：sequential phase + check new_row_appears → schema allOf（stepNode + detect→NoNewRow）挡（sequential 不设 RowBaselineStack 基线 → silent 失效）
         var json = $$"""
         {
           "version": 2, "scriptId": "t", "name": "t",
@@ -65,7 +65,7 @@ public class NewRowAppearsSchemaTests
     [Fact]
     public void DC14_SequentialPhase_StepConditionNewRowAppears_Rejected()
     {
-        // DC14 condition 补挡（第52轮 F6）：sequential phase 的 step.condition（步骤执行前条件）含 new_row_appears 同样依赖 _lastRowCount 基线，
+        // DC14 condition 补挡（第52轮 F6）：sequential phase 的 step.condition（步骤执行前条件）含 new_row_appears 同样依赖 RowBaselineStack 基线，
         // schema 须一并挡（原 allOf 只 override detect→NoNewRow，condition→Full 漏挡 → step.condition new_row_appears 静默 false 跳过 step；
         // DetectEvaluator EvaluateNewRowAppearsAsync 栈空时 warning 自承"DC14 schema 应挡，返回 false"）。本用例 detect 用合法 selector_visible（不触发）专验 condition 漏挡修复。
         var json = $$"""

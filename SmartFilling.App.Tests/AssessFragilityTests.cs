@@ -18,7 +18,10 @@ public class AssessFragilityTests
     [InlineData("//*[@id='zgy_frame_menu']", 1)]                // 含下划线但稳定（非 GUID/长数字/框架前缀）
     [InlineData("//*[@id='ext-gen1234']", 8)]                   // 框架前缀+序号动态 → 8
     [InlineData("//*[@id='Z_1775616840']", 8)]                   // 长数字（6位+）动态 → 8
-    [InlineData("//*[normalize-space(.)='登录']", 4)]           // 精确文本
+    [InlineData("//*[normalize-space(.)='登录']", 4)]           // 精确文本（带点）
+    [InlineData("//*[normalize-space()='登录']", 4)]            // dreamy D-2：不带点 normalize-space() 也 -> 4（原正则只覆盖带点，误判 contains->7）
+    [InlineData("//*[normalize-space(text())='登录']", 4)]      // dreamy D-2：normalize-space(text()) -> 4
+    [InlineData("//*[contains(text(),'提交')]", 7)]             // dreamy D-2/R4-1：contains(text(),'xxx') -> 7（原预过滤器 contains(.) 不匹配 text()）
     [InlineData("//*[@aria-label='关闭']", 5)]                  // 其他稳定属性
     [InlineData("//*[@placeholder='请输入']", 5)]               // 其他稳定属性
     [InlineData("//*[contains(concat(' ',@class,' '),' btn-primary ')]", 5)]  // class 精确匹配（ExtractAsync priority 5）

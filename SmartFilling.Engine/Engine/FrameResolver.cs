@@ -29,7 +29,7 @@ public static class FrameResolver
     }
 
     /// <summary>
-    /// 按 selector 链解析 FrameLocator（回放端用：每层先 ReplaceVars 替换 {{rowIndex}}/{{字段名}}/{{变量}}，再 FrameLocator）。
+    /// 按 selector 链解析 FrameLocator（回放端用：每层先 ReplaceVars 替换 {{_rowIndex}}/{{字段名}}/{{变量}}，再 FrameLocator）。
     /// 替换集中在此（调用方传 ctx.ScopeChain/ctx.Vars），与 step.Selector 由调用方替换语义一致（仅位置不同）。
     /// 无 {{}} 时 ReplaceVars 透传零副作用。
     /// </summary>

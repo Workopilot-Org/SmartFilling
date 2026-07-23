@@ -256,15 +256,15 @@ public class VariableHelperTests
     [Fact]
     public void GetLoopRows_WrapsScalarItems_ForItemReference()
     {
-        // 改动⑤：简单值数组（array+items）元素是标量 → 包装 {"item": 标量} 供 loop 内 {{item}} 引用。
+        // 改动⑤（改动10 item→_rowItem）：简单值数组（array+items）元素是标量 → 包装 {"_rowItem": 标量} 供 loop 内 {{_rowItem}} 引用。
         var rows = new List<object> { "apple", "book" };
         var scopeChain = new List<Dictionary<string, object>> { new() { { "items", rows } } };
 
         var result = VariableHelper.GetLoopRows("items", scopeChain);
 
         Assert.Equal(2, result.Count);
-        Assert.Equal("apple", result[0]["item"]);
-        Assert.Equal("book", result[1]["item"]);
+        Assert.Equal("apple", result[0]["_rowItem"]);
+        Assert.Equal("book", result[1]["_rowItem"]);
     }
 
     #endregion
@@ -771,13 +771,13 @@ public class VariableHelperTests
     [Fact]
     public void ResolveRawValue_LoopRowPath_TakesCurrentRowNotRootArray()
     {
-        // 批次7-loop 修复（核查第11轮 P1）：loopSource=attachments 回放每行 rowData={name,url,path}，filePath={{path}} 取当前行单附件 path
-        // （原 {{fieldName}} 在 rowData 无键→落根作用域取完整数组→每轮传全部；修复后 {{path}} 命中当前行）
+        // 批次7-loop 修复（核查第11轮 P1；改动11 {{path}}→{{_path}}）：loopSource=attachments 回放每行 rowData={name,url,path}（附件对象 key 不变），filePath={{_path}} 取当前行单附件 path
+        // （原 {{fieldName}} 在 rowData 无键→落根作用域取完整数组→每轮传全部；修复后 {{_path}} 特判映射 path 命中当前行）
         var rowData = new Dictionary<string, object> { { "path", "/uploads/a.pdf" }, { "name", "a.pdf" }, { "url", "/uploads/a.pdf" } };
         var rootAttachments = new List<object> { rowData, new Dictionary<string, object> { { "path", "/uploads/b.pdf" } } };
         var scopeChain = new List<Dictionary<string, object>> { rowData, new() { { "attachments", rootAttachments } } };
 
-        var result = VariableHelper.ResolveRawValue("{{path}}", scopeChain, new());
+        var result = VariableHelper.ResolveRawValue("{{_path}}", scopeChain, new());
 
         Assert.Equal("/uploads/a.pdf", result);  // 取当前行 path（非根作用域完整数组）
     }

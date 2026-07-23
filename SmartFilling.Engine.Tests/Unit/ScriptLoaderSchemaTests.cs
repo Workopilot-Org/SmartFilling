@@ -300,7 +300,7 @@ public class ScriptLoaderSchemaTests
     public void Placeholder_LoopAttachmentPath_AcceptedByFileField()
     {
         // 28 golden 暴露的 latent bug 修复：loopSource=file 字段（attachments）的 loop rowData 是附件对象 {name,path,url}，
-        // {{path}} 取当前行附件属性。原 ValidatePlaceholders 拒绝 {{path}}（不在顶层 fields），修复后 CollectFieldDefinitions
+        // {{_path}} 取当前行附件属性。原 ValidatePlaceholders 拒绝 {{_path}}（不在顶层 fields），修复后 CollectFieldDefinitions
         // 对 type=file 字段补 name/path/url 为合法占位符 → 放行（否则录制产出的 loopSource=attachments upload 脚本回放加载失败 400）。
         var json = """
         {
@@ -313,12 +313,12 @@ public class ScriptLoaderSchemaTests
           "phases": [
             { "kind": "phase", "name": "loop", "type": "loop", "loopSource": "attachments", "rowIndexOffset": 1, "aiGoal": "逐行上传",
               "steps": [
-                { "kind": "step", "name": "upload-row", "action": "upload", "selector": "//tr[@rowindex='{{rowIndex}}']//input", "filePath": "{{path}}" }
+                { "kind": "step", "name": "upload-row", "action": "upload", "selector": "//tr[@rowindex='{{_rowIndex}}']//input", "filePath": "{{_path}}" }
               ]}
           ]
         }
         """;
-        var script = ScriptLoader.LoadFromJson(json);  // 修复前抛"{{path}} 未定义"，修复后通过
+        var script = ScriptLoader.LoadFromJson(json);  // 修复前抛"{{_path}} 未定义"，修复后通过
         Assert.Equal("loop attachment path", script.Name);
     }
 

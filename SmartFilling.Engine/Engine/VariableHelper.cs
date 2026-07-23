@@ -40,14 +40,24 @@ public static class VariableHelper
             var key = m.Groups[1].Value;
             var parts = key.Split('.');
 
+            // 改动11：附件属性引用别名 _path/_name/_url → 映射到附件对象 path/name/url key（精确特判三个，不泛化——防 _lastUrl 错查 lastUrl 等系统变量）。
+            // 附件对象结构 {name,path,url}（ConvertAttachmentUrls 产出）不变，仅占位符引用加 _ 前缀 + 映射。
+            var rootKey = parts[0] switch
+            {
+                "_path" => "path",
+                "_name" => "name",
+                "_url" => "url",
+                _ => parts[0]
+            };
+
             // 查找根变量
             bool found = false;
             object? val = null;
             foreach (var scope in scopeChain)
             {
-                if (scope.TryGetValue(parts[0], out var v)) { val = v; found = true; break; }
+                if (scope.TryGetValue(rootKey, out var v)) { val = v; found = true; break; }
             }
-            if (!found && vars.TryGetValue(parts[0], out var v2)) { val = v2; found = true; }
+            if (!found && vars.TryGetValue(rootKey, out var v2)) { val = v2; found = true; }
             if (!found) return m.Value;
 
             // 逐层取值
@@ -78,14 +88,23 @@ public static class VariableHelper
         var key = m.Groups[1].Value;
         var parts = key.Split('.');
 
+        // 改动11：附件属性引用别名 _path/_name/_url → 映射到附件对象 path/name/url key（精确特判三个，与 ReplaceVars 同款，不泛化防 _lastUrl 错查）。
+        var rootKey = parts[0] switch
+        {
+            "_path" => "path",
+            "_name" => "name",
+            "_url" => "url",
+            _ => parts[0]
+        };
+
         // 查找根变量
         bool found = false;
         object? val = null;
         foreach (var scope in scopeChain)
         {
-            if (scope.TryGetValue(parts[0], out var v)) { val = v; found = true; break; }
+            if (scope.TryGetValue(rootKey, out var v)) { val = v; found = true; break; }
         }
-        if (!found && vars.TryGetValue(parts[0], out var v2)) { val = v2; found = true; }
+        if (!found && vars.TryGetValue(rootKey, out var v2)) { val = v2; found = true; }
         if (!found) return null;
 
         // 逐层取值（返回原始对象，不 ToString）；数组逐项 pluck 并 flatMap 摊平一维（改动④）
@@ -159,15 +178,15 @@ public static class VariableHelper
     }
 
     /// <summary>
-    /// 把 loop 数据源元素归一为 Dictionary 行（改动⑤）：
-    /// 结构化行（array+fields，元素是 Dictionary）原样；简单值数组（array+items，元素是标量）包装成 {"item": 标量} 供 loop 内 {{item}} 引用。
-    /// （结构化行恰含 item 字段时走原样分支，{{item}} 取该字段，与简单值语义一致，无冲突。）
+    /// 把 loop 数据源元素归一为 Dictionary 行（改动⑤；改动10 item→_rowItem）：
+    /// 结构化行（array+fields，元素是 Dictionary）原样；简单值数组（array+items，元素是标量）包装成 {"_rowItem": 标量} 供 loop 内 {{_rowItem}} 引用。
+    /// （结构化行恰含 item 字段时走原样分支，{{item}} 取该字段——用户字段名 item 仍合法，与简单值别名 _rowItem 不冲突。）
     /// </summary>
     private static List<Dictionary<string, object>> NormalizeItems(System.Collections.IList list)
         => list.Cast<object>().Select(o => o switch
         {
             Dictionary<string, object> d => d,                                  // 结构化行（array+fields），原样
-            _ => new Dictionary<string, object> { { "item", o } }               // 简单值（array+items），包装供 {{item}} 引用
+            _ => new Dictionary<string, object> { { "_rowItem", o } }               // 简单值（array+items），包装供 {{_rowItem}} 引用
         }).ToList();
 
     /// <summary>

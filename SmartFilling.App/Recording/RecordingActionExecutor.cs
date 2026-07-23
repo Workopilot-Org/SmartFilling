@@ -64,13 +64,13 @@ public class RecordingActionExecutor
         {
             Format = !string.IsNullOrEmpty(fmt) ? fmt : baseDef?.Format,
             Transform = !string.IsNullOrEmpty(tr) ? tr : baseDef?.Transform,
-            Type = !string.IsNullOrEmpty(tp) ? tp : baseDef?.Type,
+            Type = !string.IsNullOrEmpty(tp) ? tp : baseDef?.Type!,  // baseDef?.Type 运行时可能 null（首次录制 Type 缺失，让 ResolveFieldTypeAsync 现场补）；`!` 抑制 CS8601（字段声明 string 但故意赋 null 触发现场补，测试 FirstRecord_TypeMissing 验）
         };
     }
 
     /// <summary>
-    /// 决策 D3/F①：把 loop 内多独立 input（明细每行各一框）selector 的行索引参数化为 {{rowIndex}}，
-    /// 对齐回放 ScriptEngine loop（ctx.Vars["rowIndex"]=rowIdx+offset，{{rowIndex}} 经 VariableHelper.ReplaceVars 替换为当前行索引）。
+    /// 决策 D3/F①：把 loop 内多独立 input（明细每行各一框）selector 的行索引参数化为 {{_rowIndex}}，
+    /// 对齐回放 ScriptEngine loop（ctx.Vars["_rowIndex"]=rowIdx+offset，{{_rowIndex}} 经 VariableHelper.ReplaceVars 替换为当前行索引）。
     /// 多模式：属性优先（@rowindex/@data-row/@data-index=数字）→ 回退位置（任意 tag[数字]，如 tr[3]）。
     /// 多匹配=歧义（属性行索引多个 / 位置多[数字]=行列分不清）→ ambiguous=true（ExecuteOperateAsync 返 OperateResult(false) → AI 调 request_help 兜底）。
     /// 注：posRe 用 \w+\[\d+\]（覆盖 tr/td 等 tag，不只 tr），以准确识别"多[数字]=行列歧义"（计划 F⑤ test5 tr[1]/td[2] 期望 ambiguous）。
@@ -82,7 +82,7 @@ public class RecordingActionExecutor
         if (mode is null or "attr")
         {
             var am = attrRe.Matches(selector);
-            if (am.Count == 1) return (attrRe.Replace(selector, "@$1='{{rowIndex}}'"), false);
+            if (am.Count == 1) return (attrRe.Replace(selector, "@$1='{{_rowIndex}}'"), false);
             if (am.Count > 1) return (selector, true);  // 多个属性行索引 = 歧义
         }
         // 位置：任意 tag[数字]（tr[3]/td[2]）；多[数字]=行列分不清
@@ -90,10 +90,359 @@ public class RecordingActionExecutor
         if (mode is null or "position")
         {
             var pm = posRe.Matches(selector);
-            if (pm.Count == 1) return (posRe.Replace(selector, "$1[{{rowIndex}}]"), false);
+            if (pm.Count == 1) return (posRe.Replace(selector, "$1[{{_rowIndex}}]"), false);
             if (pm.Count > 1) return (selector, true);  // 行/列分不清
         }
         return (selector, false);  // 无行索引（同 input 场景），不变
+    }
+
+    // ===== dreamy A/B/E：录制期 selector 文本参数化 + value 整值参数化 + bizValues 全字段搜替换 =====
+
+    /// <summary>
+    /// dreamy A：click selector 文本锚点（normalize-space/contains）参数化为 {{fieldName}}。
+    /// 放宽正则（D-2）：normalize-space 覆盖 . / 空 / text() 三种第一参数形式；contains 覆盖 . 与 text()。
+    /// per-anchor 守卫（D-1）：移除原前置 selector.Contains("{{") 守卫，改 match 后查目标文本锚点引号内文本是否已含 {{}}（已参数化则跳过该锚点，不重复参数化）。
+    /// 预过滤器（R4-1）：contains(text()) 也被 contains( 覆盖（前置 StartsWith("//") 守卫 + 正则精确匹配兜底，不误匹配）。
+    /// 纯函数（对齐既有 ParametrizeRowIndex），caller 传 _recordVarValues 引用填缓存（F4，match.Groups 只在函数内可得）。
+    /// </summary>
+    internal static string? ParametrizeSelectorText(string? selector, string? fieldName, Dictionary<string,string>? recordVarValues = null)
+    {
+        if (fieldName == null || string.IsNullOrEmpty(selector)
+            || !selector.StartsWith("//")
+            || !(selector.Contains("normalize-space") || selector.Contains("contains(")))  // R4-1：contains(text()) 也被 contains( 覆盖（前置 StartsWith("//") 守卫 + 正则精确匹配兜底，不误匹配）
+            return selector;
+
+        // D-2：normalize-space\((?:\.|text\(\))?\) 覆盖 . / text() / 空（原只覆盖 .）
+        var match = Regex.Match(selector, @"normalize-space\((?:\.|text\(\))?\)\s*=\s*['""]([^'""]*)['""]");
+        if (match.Success && !match.Groups[1].Value.Contains("{{"))  // D-1 per-anchor：目标锚点已参数化则跳过
+        {
+            if (recordVarValues != null) recordVarValues[fieldName] = match.Groups[1].Value;  // F4 缓存填充（实际文本，供守卫跨步骤复用）
+            return selector.Substring(0, match.Index)
+                + $"normalize-space(.)='{{{{{fieldName}}}}}'"
+                + selector.Substring(match.Index + match.Length);
+        }
+
+        // D-2：contains\((?:\.|text\(\))\s*, 覆盖 . 与 text()（第一参数必选，空 contains(,'x') 非法）
+        match = Regex.Match(selector, @"contains\((?:\.|text\(\))\s*,\s*['""]([^'""]*)['""]\)");
+        if (match.Success && !match.Groups[1].Value.Contains("{{"))  // D-1 per-anchor
+        {
+            if (recordVarValues != null) recordVarValues[fieldName] = match.Groups[1].Value;  // F4 缓存填充
+            return selector.Substring(0, match.Index)
+                + $"contains(.,'{{{{{fieldName}}}}}')"
+                + selector.Substring(match.Index + match.Length);
+        }
+        return selector;
+    }
+
+    /// <summary>
+    /// dreamy B：fill/type/select 的 value 整值参数化为 {{fieldName}}（原内联 L536 漏 type，与提示词 type 并列必传 fieldName 不对称）。
+    /// 守卫（决策24）：value 已含 {{}}（bizValues 已处理）则跳过，不重复参数化。
+    /// 纯函数，caller 传 _recordVarValues 引用填缓存（F4，原 value 只在函数内可得）。
+    /// </summary>
+    internal static string? ParametrizeValue(string? action, string? value, string? fieldName, Dictionary<string,string>? recordVarValues = null)
+    {
+        if ((action == "fill" || action == "type" || action == "select") && fieldName != null && value != null
+            && !value.Contains("{{"))  // 决策24 守卫：bizValues 已处理则跳过
+        {
+            if (recordVarValues != null) recordVarValues[fieldName] = value;  // F4 缓存填充（参数化前的原值，供守卫跨步骤复用）
+            return $"{{{{{fieldName}}}}}";
+        }
+        return value;
+    }
+
+    /// <summary>
+    /// dreamy E1：bizValues 校验 + 自动推导 + 切分检测。返 (AllBiz, Warnings, Error)。
+    /// 自动推导（决策3）：fill/type/select 的 value + fieldName 自动加 bizValue。
+    /// 去重（决策5）：按 (value, field) 去重，避免自动推导与 AI 传 bizValues 重复。
+    /// 字段名校验（决策11/13）：bizValues.field 必须已注册（本步 fieldName 或前步已注册，前瞻——阶段6 早于字段注册 L626）。
+    /// 切分检测（决策9/10，D-8 接受现状）：step.Selector 主字段属性锚点整体 bizValue → warning（不阻断，拼进 message）。
+    /// 搜到校验（决策11/13）：见下方待决策说明（本版 best-effort 不做，由搜替换本身 step 不变兜底）。
+    /// </summary>
+    internal static (List<BizValue> AllBiz, List<string> Warnings, string? Error) BuildBizList(
+        List<BizValue>? bizValues, string? fieldName, string? action, StepNode step, ScriptV2? script)
+    {
+        var warnings = new List<string>();
+        var allBiz = new List<BizValue>(bizValues ?? new());
+
+        // 决策3：自动推导 fill/type/select 的 value + fieldName
+        if ((action == "fill" || action == "type" || action == "select") && fieldName != null && !string.IsNullOrEmpty(step.Value))
+        {
+            var derived = new BizValue(step.Value!, fieldName);
+            // 决策5：按 (value, field) 去重
+            if (!allBiz.Any(b => b.Value == derived.Value && b.Field == derived.Field))
+                allBiz.Add(derived);
+        }
+
+        // E3 字段名校验（对 AI 传的 bizValues；自动推导的 field=fieldName 必注册）
+        if (bizValues != null)
+        {
+            foreach (var b in bizValues)
+            {
+                if (string.IsNullOrEmpty(b.Field) || string.IsNullOrEmpty(b.Value))
+                    return (allBiz, warnings, $"❌ bizValues 条目 field/value 不能为空（收到 field='{b.Field}' value='{b.Value}'）。请用 [{{value,field}}] 格式传业务值 + 已注册字段名");
+                // 字段名校验（决策11/13）：field 必须已注册（本步 fieldName 或前步已注册）
+                bool fieldRegistered = b.Field == fieldName
+                    || (script != null && VariableHelper.GetFieldDefinition(b.Field, script) != null);
+                if (!fieldRegistered)
+                    return (allBiz, warnings, $"❌ bizValues field '{b.Field}' 未注册（本步 fieldName={fieldName ?? "null"}，前步也未注册该字段）。请用已注册字段名，或 request_help");
+            }
+        }
+
+        // E2 切分检测（决策9/10，D-8 接受现状）：step.Selector 主字段属性锚点整体 bizValue → warning（不阻断）
+        if (!string.IsNullOrEmpty(step.Selector))
+        {
+            foreach (var b in allBiz)
+            {
+                if (Regex.IsMatch(step.Selector, $@"@\w+\s*=\s*['""]{Regex.Escape(b.Value)}['""]"))
+                    warnings.Add($"⚠️ bizValue '{b.Value}' == 属性值整体，可能含固定前缀，请切分传业务片段（如 dc_021 传 021 非 dc_021）");
+            }
+        }
+
+        return (allBiz, warnings, null);
+    }
+
+    /// <summary>
+    /// dreamy E1：单字段搜替换。决策6/7/8：>=8 无边界，&lt;8 词边界正则（避免短值误匹配）。
+    /// </summary>
+    internal static string? ParametrizeString(string? s, List<BizValue> biz)
+    {
+        if (s == null || biz.Count == 0) return s;
+        foreach (var b in biz)
+        {
+            if (string.IsNullOrEmpty(b.Value)) continue;
+            var pattern = b.Value.Length >= 8
+                ? Regex.Escape(b.Value)
+                : $"(?<![A-Za-z0-9]){Regex.Escape(b.Value)}(?![A-Za-z0-9])";
+            s = Regex.Replace(s, pattern, $"{{{{{b.Field}}}}}");
+        }
+        return s;
+    }
+
+    /// <summary>
+    /// dreamy E1：step 全字段搜替换（含 Selector/Value/Iframe）。用于 save_step（E6，无 finalStep 覆盖，step 直接传 ExecuteSaveStep）。
+    /// 签名简化为 2 参（E1 修正第8点）：校验由 BuildBizList 做，fieldName/action/recordVarValues 移除；caller 填缓存（F4）。
+    /// 决策27/28：全字段搜替换（含 iframe 链每层 + fallback 递归 + detect 递归 + captcha 5 selector + args string 元素）。
+    /// </summary>
+    internal static StepNode ParametrizeByBizValues(StepNode step, List<BizValue> allBiz)
+    {
+        if (allBiz.Count == 0) return step;
+        return step with
+        {
+            Selector = ParametrizeString(step.Selector, allBiz),
+            Value = ParametrizeString(step.Value, allBiz),
+            Url = ParametrizeString(step.Url, allBiz),
+            Key = ParametrizeString(step.Key, allBiz),
+            FilePath = ParametrizeString(step.FilePath, allBiz),
+            Code = ParametrizeString(step.Code, allBiz),
+            Folder = ParametrizeString(step.Folder, allBiz),
+            Filename = ParametrizeString(step.Filename, allBiz),
+            Description = ParametrizeString(step.Description, allBiz),
+            Message = ParametrizeString(step.Message, allBiz),
+            Iframe = step.Iframe?.Select(s => ParametrizeString(s, allBiz)!).ToArray(),
+            ImageSelector = ParametrizeString(step.ImageSelector, allBiz),
+            InputSelector = ParametrizeString(step.InputSelector, allBiz),
+            SliderSelector = ParametrizeString(step.SliderSelector, allBiz),
+            TargetSelector = ParametrizeString(step.TargetSelector, allBiz),
+            BackgroundSelector = ParametrizeString(step.BackgroundSelector, allBiz),
+            Condition = ParametrizeDetect(step.Condition, allBiz),
+            Until = ParametrizeDetect(step.Until, allBiz),
+            Detect = ParametrizeDetect(step.Detect, allBiz),
+            Fallback = ParametrizeFallback(step.Fallback, allBiz),
+            CleanupSteps = step.CleanupSteps?.Select(s => ParametrizeByBizValues(s, allBiz)).ToList(),
+            Args = ParametrizeArgs(step.Args, allBiz),
+        };
+    }
+
+    /// <summary>
+    /// dreamy E1：step 非 Selector/Value/Iframe 字段搜替换。用于 operate（E7，finalStep 用 extractedSelector/value/iframeChain 局部变量覆盖这三字段，
+    /// 整体搜替换 step 会被覆盖丢弃，故拆为：caller 对三局部变量各调 ParametrizeString + 对 step 调本方法搜替换其余字段）。
+    /// </summary>
+    internal static StepNode ParametrizeByBizValuesOtherFields(StepNode step, List<BizValue> allBiz)
+    {
+        if (allBiz.Count == 0) return step;
+        return step with
+        {
+            Url = ParametrizeString(step.Url, allBiz),
+            Key = ParametrizeString(step.Key, allBiz),
+            FilePath = ParametrizeString(step.FilePath, allBiz),
+            Code = ParametrizeString(step.Code, allBiz),
+            Folder = ParametrizeString(step.Folder, allBiz),
+            Filename = ParametrizeString(step.Filename, allBiz),
+            Description = ParametrizeString(step.Description, allBiz),
+            Message = ParametrizeString(step.Message, allBiz),
+            ImageSelector = ParametrizeString(step.ImageSelector, allBiz),
+            InputSelector = ParametrizeString(step.InputSelector, allBiz),
+            SliderSelector = ParametrizeString(step.SliderSelector, allBiz),
+            TargetSelector = ParametrizeString(step.TargetSelector, allBiz),
+            BackgroundSelector = ParametrizeString(step.BackgroundSelector, allBiz),
+            Condition = ParametrizeDetect(step.Condition, allBiz),
+            Until = ParametrizeDetect(step.Until, allBiz),
+            Detect = ParametrizeDetect(step.Detect, allBiz),
+            Fallback = ParametrizeFallback(step.Fallback, allBiz),
+            CleanupSteps = step.CleanupSteps?.Select(s => ParametrizeByBizValues(s, allBiz)).ToList(),
+            Args = ParametrizeArgs(step.Args, allBiz),
+        };
+    }
+
+    /// <summary>dreamy E1/决策28：fallback 递归搜替换 Selector/Value/Code/Iframe 链每层/Fallback（递归）。</summary>
+    internal static StepFallback? ParametrizeFallback(StepFallback? fb, List<BizValue> biz)
+    {
+        if (fb == null || biz.Count == 0) return fb;
+        return fb with
+        {
+            Selector = ParametrizeString(fb.Selector, biz),
+            Value = ParametrizeString(fb.Value, biz),
+            Code = ParametrizeString(fb.Code, biz),
+            Iframe = fb.Iframe?.Select(s => ParametrizeString(s, biz)!).ToArray(),
+            Fallback = ParametrizeFallback(fb.Fallback, biz),
+        };
+    }
+
+    /// <summary>
+    /// dreamy E1：args 列表搜替换。仅 string 元素搜替换；JsonElement(String) 归一化（避免重蹈 test-covers-production-deserialize-path 类型陷阱——
+    /// Args 经 _jsonOptions 反序列化为 List&lt;object&gt;，string 元素运行时是 JsonElement(String) 非 CLR string）。
+    /// </summary>
+    internal static List<object>? ParametrizeArgs(List<object>? args, List<BizValue> biz)
+    {
+        if (args == null || biz.Count == 0) return args;
+        return args.Select(a => a switch
+        {
+            string s => (object)(ParametrizeString(s, biz) ?? ""),
+            System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.String
+                => (object)(ParametrizeString(je.GetString(), biz) ?? ""),
+            _ => a
+        }).ToList();
+    }
+
+    /// <summary>
+    /// dreamy E5/决策25：detect 递归搜替换 Selector/Value/Keywords[]/UrlContains/Iframe 链每层/All/Any/Not（递归）。
+    /// 不搜替换 Check（JS 表达式用 fillData/vars 直接访问，非模板，见 DetectEvaluator EvaluateJsCondition）/Field（字段名标识符）/Type/Count/Ref/IframeRef。
+    /// 复用 ProcessDetectNodeAsync 的 all/any/not 递归结构（新写 internal static 非异步方法，非直接调用）。
+    /// </summary>
+    internal static DetectCondition? ParametrizeDetect(DetectCondition? detect, List<BizValue> biz)
+    {
+        if (detect == null || biz.Count == 0) return detect;
+        return detect with
+        {
+            Selector = ParametrizeString(detect.Selector, biz),
+            Value = ParametrizeString(detect.Value, biz),
+            Keywords = detect.Keywords?.Select(k => ParametrizeString(k, biz)!).ToArray(),
+            UrlContains = ParametrizeString(detect.UrlContains, biz),
+            Iframe = detect.Iframe?.Select(s => ParametrizeString(s, biz)!).ToArray(),
+            All = detect.All?.Select(c => ParametrizeDetect(c, biz)!).ToList(),
+            Any = detect.Any?.Select(c => ParametrizeDetect(c, biz)!).ToList(),
+            Not = ParametrizeDetect(detect.Not, biz),
+        };
+    }
+
+    // ===== dreamy F：operate {{}} 守卫兜底 + 缓存复用（防 AI 误写 {{}} 致录制执行死循环）=====
+
+    /// <summary>
+    /// dreamy F2：检查 operate 录制期真实执行的字段（selector/value/url）是否含未解析 {{业务变量}}。
+    /// 返 "selector"/"value"/"url" 或 null（无未解析）。
+    /// D-6 决策：navigate 不用 selector 用 url，不拦 selector（只拦 url）。
+    /// 系统凭据 {{username}}/{{password}} 排除（由 ResolveSystemVars 替换）。
+    /// ref 路径放行：refValue 非空时不返 "selector"（ref 由 ExtractAsync 提取实际 selector 覆盖 AI 的 {{}}，拦截误伤）。
+    /// </summary>
+    internal static string? CheckUnresolvedRecordVar(string? action, string? selector, string? value, string? refValue)
+    {
+        // selector 守卫（D-6：navigate 不返 selector；ref 路径放行）
+        if (action != "navigate" && !string.IsNullOrEmpty(selector) && selector.Contains("{{") && string.IsNullOrEmpty(refValue))
+            return "selector";
+
+        // value 守卫（fill/type/select；系统凭据排除）
+        if ((action == "fill" || action == "type" || action == "select") && !string.IsNullOrEmpty(value) && value.Contains("{{"))
+        {
+            if (!IsSystemCredentialOnlyVar(value))
+                return "value";
+        }
+
+        // url 守卫（navigate，value 即 step.Url）
+        if (action == "navigate" && !string.IsNullOrEmpty(value) && value.Contains("{{"))
+        {
+            if (!IsSystemCredentialOnlyVar(value))
+                return "url";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// dreamy F2：value 是否**仅**含系统凭据占位符（{{username}}/{{password}}）。
+    /// 含其他 {{var}} 则返 false（非系统凭据，需守卫拦截）；至少一个 {{var}} 且全是系统凭据则 true（由 ResolveSystemVars 替换，不拦）。
+    /// </summary>
+    private static bool IsSystemCredentialOnlyVar(string value)
+    {
+        var systemKeys = SmartFilling.Engine.Engine.ScriptLoader.SystemCredentialKeys;
+        var matches = Regex.Matches(value, @"\{\{(\w+)\}\}");
+        if (matches.Count == 0) return false;
+        foreach (Match m in matches)
+        {
+            if (!systemKeys.Contains(m.Groups[1].Value))
+                return false;  // 含非系统凭据 var
+        }
+        return true;  // 至少一个 {{var}} 且全是系统凭据
+    }
+
+    /// <summary>
+    /// dreamy F2 进阶档：从 selector/value 提取 {{varName}}，查 recordVarValues 缓存——有值则替换。
+    /// 所有 {{varName}} 都命中缓存返 true（用缓存值替换后继续执行，不问用户）；任一未命中返 false（问用户要值）。
+    /// recordVarValues=null 或空返 false（无缓存可用）。
+    /// </summary>
+    internal static bool TrySubstituteFromRecordVars(string? selector, string? value, string field, Dictionary<string,string>? recordVarValues, out string? cachedSelector, out string? cachedValue)
+    {
+        cachedSelector = selector;
+        cachedValue = value;
+        if (recordVarValues == null || recordVarValues.Count == 0) return false;
+
+        bool allResolved = true;
+        if (field == "selector" && !string.IsNullOrEmpty(selector))
+        {
+            var (r, resolved) = SubstituteWithCache(selector, recordVarValues);
+            cachedSelector = r;
+            if (!resolved) allResolved = false;
+        }
+        if ((field == "value" || field == "url") && !string.IsNullOrEmpty(value))
+        {
+            var (r, resolved) = SubstituteWithCache(value, recordVarValues);
+            cachedValue = r;
+            if (!resolved) allResolved = false;
+        }
+        return allResolved;
+    }
+
+    private static (string Result, bool AllResolved) SubstituteWithCache(string s, Dictionary<string,string> cache)
+    {
+        bool resolved = true;
+        var result = Regex.Replace(s, @"\{\{(\w+)\}\}", m =>
+        {
+            var key = m.Groups[1].Value;
+            if (cache.TryGetValue(key, out var v) && !string.IsNullOrEmpty(v))
+                return v;
+            resolved = false;  // 未命中，保留原 {{varName}}
+            return m.Value;
+        });
+        return (result, resolved);
+    }
+
+    /// <summary>dreamy F2：据字段类型生成"问用户要变量值"引导消息（selector 给 (h)，value/url 走通用 request_help）。</summary>
+    private static string BuildAskUserVarMessage(string field, string? selector, string? value)
+    {
+        var names = ExtractVarNames(field == "selector" ? selector : value);
+        return field switch
+        {
+            "selector" => $"⚠️ selector 引用变量占位符 {names}，录制期需实际值定位元素。请 request_help 问用户提供该变量的实际值（如合同编号 SQS2026071300003），然后用实际值替换 {{{{varName}}}} + fieldName 重新 operate（代码自动参数化落盘 {{{{fieldName}}}}）；或选 (h) 跳过录制期执行（回放期再验证）",
+            "value" => $"⚠️ fill/type/select 值引用变量占位符 {names}，录制期需实际值填入。请 request_help 问用户要实际值，然后用实际值 + fieldName 重新 operate（代码自动参数化落盘 {{{{fieldName}}}}）",
+            "url" => $"⚠️ navigate URL 引用变量占位符 {names}，录制期需实际 URL 导航。请 request_help 问用户要实际 URL",
+            _ => $"⚠️ 字段引用变量占位符 {names}，请 request_help 问用户要实际值"
+        };
+    }
+
+    private static string ExtractVarNames(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        var matches = Regex.Matches(s, @"\{\{(\w+)\}\}");
+        var names = matches.Cast<Match>().Select(m => m.Groups[1].Value).Distinct();
+        return string.Join("/", names);
     }
 
     /// <summary>
@@ -146,12 +495,39 @@ public class RecordingActionExecutor
         string? loopSource = null,
         bool acceptFragile = false,
         Func<FragileType, string?, bool>? isAcceptedAsIs = null,  // ND7（a-a-4）：acceptAsIs 集合查询回调（_acceptedAsIs 在 RecordingEngine，阶段1 count==0 record-without-execute 用）
-        Func<FragileType, string?, bool>? isFragileAccepted = null)  // 待决策1（a-a-4）：acceptFragile 集合查询回调（_acceptedFragile 在 RecordingEngine，阶段0 iframe 脆弱链集合命中 falls-through 用，镜像 isAcceptedAsIs）
+        Func<FragileType, string?, bool>? isFragileAccepted = null,  // 待决策1（a-a-4）：acceptFragile 集合查询回调（_acceptedFragile 在 RecordingEngine，阶段0 iframe 脆弱链集合命中 falls-through 用，镜像 isAcceptedAsIs）
+        Dictionary<string, string>? recordVarValues = null,  // dreamy F3：缓存引用（caller 传 _recordVarValues，守卫跨步骤复用 + 参数化点填缓存，字典引用直传非回调）
+        List<BizValue>? bizValues = null)  // dreamy D-3：caller 从 args 解析传入（GetObject<List<BizValue>>），E7 阶段6 搜替换
     {
         var action = step.Action;
         var value = step.Action == "navigate" ? step.Url : step.Value;
         var refValue = args.GetValueOrDefault("ref")?.ToString();
         var selector = step.Selector;
+
+        // dreamy F1：通用守卫——operate 录制期真实执行的字段（selector/value/url）含未解析 {{业务变量}} → 问用户要变量实际值（A' 兜底：AI 优先从页面读实际值，读不到时问用户要值）
+        // （系统凭据由 ResolveSystemVars 替换，不拦；save_step 的 detect/until/condition/evaluate/extract 录制期不执行 DOM 定位，含 {{}} 合法——回放期 ReplaceVars，不走本守卫）
+        // 时序：守卫在阶段0 前（执行前）检查原始 selector/value/url；E 搜替换在阶段6（执行后）。AI 按 E 传实际值→守卫不拦→E 搜替换；AI 误写 {{}}→守卫拦截（查缓存/问用户）→不进阶段6 E。互补不冲突。
+        var unresolvedField = CheckUnresolvedRecordVar(action, selector, value, refValue);
+        if (unresolvedField != null)
+        {
+            // 进阶档（缓存复用）：先查 recordVarValues（用户给过的变量值），有值则用缓存值替换 {{}} 后继续执行——同变量只问一次，后续步骤引用复用不重复问
+            if (TrySubstituteFromRecordVars(selector, value, unresolvedField, recordVarValues, out var cachedSelector, out var cachedValue))
+            {
+                selector = cachedSelector; value = cachedValue;  // 用缓存值替换，继续走原执行流程（不问用户）
+            }
+            else
+            {
+                // acceptAsIs：用户选过 (h) 的 selector 跳过守卫（仅 selector，用 selector 代表整个 step）
+                bool accepted = unresolvedField == "selector" && !string.IsNullOrEmpty(selector)
+                    && isAcceptedAsIs?.Invoke(FragileType.StepSelector, selector) == true;
+                if (!accepted)
+                    return new OperateResult(false, BuildAskUserVarMessage(unresolvedField, selector, value), selector, null)
+                    {
+                        // 仅 selector 给 (h)：record-without-execute 只在 selector count==0 生效；value/url 走通用 request_help 问用户要值
+                        IsCountZero = unresolvedField == "selector"
+                    };
+            }
+        }
 
         // 批次2：pressKey 无 selector 且无 aria-ref → 全局键盘按键（设计四层一致支持；修录制端外层元素定位流程拦截、内层全局键盘分支不可达的既存 bug）
         if (action == "pressKey" && string.IsNullOrEmpty(refValue) && string.IsNullOrEmpty(selector))
@@ -501,7 +877,9 @@ public class RecordingActionExecutor
             {
                 var frame = ResolveFrame(page, iframeChain);
                 var fieldDef = ResolveRecordingFieldDef(step.Field, script, args);
-                await ExecuteActionAsync(page, frame, action, validatedSelector, value, step, ct, fieldDef, loopSource);
+                // P11（2026-07-23）：file 类型 loopSource 任意名两端判断一致——查 loopSource 字段 Type==file 传 isFileLoop（VariableHelper.GetFieldDefinition，与 RecordingEngine L506 FindField 同款），替代 L1121 硬编码 loopSource=="attachments"。
+                var isFileLoop = loopSource != null && VariableHelper.GetFieldDefinition(loopSource, script)?.Type == "file";
+                await ExecuteActionAsync(page, frame, action, validatedSelector, value, step, ct, fieldDef, loopSource, isFileLoop);
                 extractedSelector = validatedSelector;
             }
             catch (Exception ex)
@@ -533,38 +911,28 @@ public class RecordingActionExecutor
 
         // ========== 阶段 6：参数化 + 保存 ==========
         var fieldName = args.GetValueOrDefault("fieldName")?.ToString();
-        if ((action == "fill" || action == "select") && fieldName != null && value != null)
-            value = $"{{{{{fieldName}}}}}";
 
-        if (action == "click" && fieldName != null && extractedSelector != null
-            && extractedSelector.StartsWith("//") && (extractedSelector.Contains("normalize-space") || extractedSelector.Contains("contains(.")))
+        // dreamy E7：bizValues 搜替换（决策24：bizValues 先于 A/B，保 value 拼接前缀 + selector 属性锚点）
+        // bizValues 搜替换 finalStep 实际使用的三个局部变量（extractedSelector/value/iframeChain）+ step 其他字段
+        // （不能只搜替换 step，否则被 finalStep `step with { Selector=extractedSelector,... }` 覆盖丢弃——R1-1 修正）
+        var (allBiz, bizWarnings, bizErr) = BuildBizList(bizValues, fieldName, action, step, script);
+        if (bizErr != null) return new OperateResult(false, bizErr, extractedSelector, iframeChain);  // E3 字段名校验失败 → caller 失败分流走 request_help
+        if (allBiz.Count > 0)
         {
-            // 精确文本：normalize-space(.)='xxx'
-            var match = System.Text.RegularExpressions.Regex.Match(extractedSelector,
-                @"normalize-space\(\.\)\s*=\s*['""]([^'""]*)['""]");
-            if (match.Success)
-            {
-                extractedSelector = extractedSelector.Substring(0, match.Index)
-                    + $"normalize-space(.)='{{{{{fieldName}}}}}'"
-                    + extractedSelector.Substring(match.Index + match.Length);
-            }
-            else
-            {
-                // 文本锚点（阶段三/四）产出的 selector 含 contains(.,'xxx')：门控已放宽让其进入本块参数化。
-                // 先匹配精确 normalize-space，未命中再匹配 contains，两者不会共存于同一 selector。
-                match = System.Text.RegularExpressions.Regex.Match(extractedSelector,
-                    @"contains\(\.\s*,\s*['""]([^'""]*)['""]\)");
-                if (match.Success)
-                {
-                    extractedSelector = extractedSelector.Substring(0, match.Index)
-                        + $"contains(.,'{{{{{fieldName}}}}}')"
-                        + extractedSelector.Substring(match.Index + match.Length);
-                }
-            }
+            extractedSelector = ParametrizeString(extractedSelector, allBiz);   // selector 属性锚点/拼接
+            value = ParametrizeString(value, allBiz);                          // value 拼接保留前缀（备注：021 -> 备注：{{companyCode}}）
+            iframeChain = iframeChain?.Select(s => ParametrizeString(s, allBiz)!).ToArray();  // 决策27 iframe 链每层
+            step = ParametrizeByBizValuesOtherFields(step, allBiz);            // Url/Key/Code/Folder/Filename/Description/Message/captcha 5 selector/Condition/Until/Detect/Fallback/CleanupSteps/Args
+            if (recordVarValues != null) foreach (var b in allBiz) recordVarValues[b.Field] = b.Value;  // F4 缓存填充（caller 填，match.Groups 在 A/B 内部填）
         }
 
+        // dreamy A：文本锚点参数化（per-anchor 守卫 D-1，D-2 覆盖 . / 空 / text()，R4-1 预过滤器 contains()）
+        extractedSelector = ParametrizeSelectorText(extractedSelector, fieldName, recordVarValues);
+        // dreamy B：fill/type/select 整值参数化（守卫 skip if {{}}，含 type 修原 L536 漏 type；recordVarValues 内部填缓存 F4）
+        value = ParametrizeValue(action, value, fieldName, recordVarValues);
+
         // 决策 D3/F①：loop phase 内 + AI 传 rowIndexed=true → 多独立 input（明细每行各一框）selector 行索引参数化。
-        // 对齐回放 ScriptEngine loop（ctx.Vars["rowIndex"]=rowIdx+offset，{{rowIndex}} 经 ReplaceVars 替换）。
+        // 对齐回放 ScriptEngine loop（ctx.Vars["_rowIndex"]=rowIdx+offset，{{_rowIndex}} 经 ReplaceVars 替换）。
         // 多模式：属性优先（@rowindex/@data-row/@data-index）→ 回退位置（tr[N]）；多[数字]=行列分不清 → request_help 兜底（AI 看 OperateResult(false) 调 request_help）。
         if (loopSource != null && RecordingEngine.GetBool(args, "rowIndexed") == true && extractedSelector != null)
         {
@@ -600,6 +968,8 @@ public class RecordingActionExecutor
         steps.Add(finalStep);
 
         var finalMessage = $"已执行并保存步骤: {action} {extractedSelector}";
+        // dreamy E2：切分 warning 拼进 finalMessage（AI 下轮可见，不阻断落盘）
+        if (bizWarnings.Count > 0) finalMessage += "\n" + string.Join("\n", bizWarnings);
         if (needsFallback)
         {
             var priorityDesc = extractedSelector != null
@@ -649,7 +1019,7 @@ public class RecordingActionExecutor
     /// <summary>
     /// 执行单个 Playwright 操作
     /// </summary>
-    private async Task ExecuteActionAsync(IPage page, ILocator frame, string action, string? selector, string? value, StepNode step, CancellationToken ct, FieldDefinition? fieldDef = null, string? loopSource = null)
+    private async Task ExecuteActionAsync(IPage page, ILocator frame, string action, string? selector, string? value, StepNode step, CancellationToken ct, FieldDefinition? fieldDef = null, string? loopSource = null, bool isFileLoop = false)
     {
         // 批次6：dialog handler 注册（对齐回放 StepExecutor L48-66；录制不收集 _lastDialogMessage，AcceptAsync/DismissAsync fire-and-forget）
         EventHandler<IDialog>? dialogHandler = null;
@@ -687,7 +1057,7 @@ public class RecordingActionExecutor
                     var rawValue = ResolveSystemVars(value);  // 录制语义：仅系统凭据，业务变量保留占位符（不改用 ReplaceVars）
                     var ft = await ResolveFieldTypeAsync(loc, fieldDef);
                     var fillValue = VariableHelper.ApplyFormat(VariableHelper.ApplyTransform(rawValue, fieldDef?.Transform), fieldDef?.Format, ft);
-                    await loc!.FillAsync(fillValue);
+                    await loc!.FillAsync(fillValue!);
                     if (step.PressEnter == true) await loc!.PressAsync("Enter");
                     break;
                 }
@@ -697,7 +1067,7 @@ public class RecordingActionExecutor
                     var rawValue = ResolveSystemVars(value);
                     var ft = await ResolveFieldTypeAsync(loc, fieldDef);
                     var typeValue = VariableHelper.ApplyFormat(VariableHelper.ApplyTransform(rawValue, fieldDef?.Transform), fieldDef?.Format, ft);
-                    await loc!.PressSequentiallyAsync(typeValue);
+                    await loc!.PressSequentiallyAsync(typeValue!);
                     if (step.PressEnter == true) await loc!.PressAsync("Enter");
                     break;
                 }
@@ -719,7 +1089,7 @@ public class RecordingActionExecutor
                             if (!int.TryParse(sv, out var idx))
                                 throw new ArgumentException($"select matchBy=index 需要整数，实际: '{sv}'");
                             await loc!.SelectOptionAsync(new[] { new SelectOptionValue { Index = idx } }); break;
-                        default: await loc!.SelectOptionAsync(new[] { sv }); break;
+                        default: await loc!.SelectOptionAsync(new[] { sv! }); break;
                     }
                     break;
                 }
@@ -750,7 +1120,9 @@ public class RecordingActionExecutor
                         throw new ArgumentException("附件路径均为空，无法上传");
                     // 批次7-loop：loopSource=attachments（顶层附件 loop）模拟回放 loop——逐个 SetInputFiles 触发 JS change 累积（JS 附件列表场景，同 input）；
                     //             非 loop/单附件：一次 SetInputFiles（multiple input 场景）。适用边界决策①：仅顶层 loopSource=attachments；明细附件录模板不验证（①a）。
-                    if (loopSource == "attachments" && files.Length > 1)
+                    // P11（2026-07-23）：file 类型 loopSource 任意名两端判断一致——isFileLoop（caller ExecuteOperateAsync 查 loopSource 字段 Type==file 传入）替代硬编码 loopSource=="attachments"。
+                    //   file loopSource 不叫 attachments（phaseFieldType=file 任意名）时，原硬编码走 else 一次 SetInputFiles 不触发 JS 累积 → 录制期 JS 列表不累积 → 录制失败/不完整（与 L506 {{_path}} 逐行语义不一致）。
+                    if (isFileLoop && files.Length > 1)
                     {
                         foreach (var f in files)
                             await loc!.SetInputFilesAsync(new[] { f });

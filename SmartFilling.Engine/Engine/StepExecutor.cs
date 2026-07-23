@@ -54,7 +54,7 @@ public class StepExecutor
             dialogHandler = (_, dialog) =>
             {
                 ctx.Vars["_lastDialogMessage"] = dialog.Message;
-                if (step.PreSetup.DialogText == null || dialog.Message.Contains(step.PreSetup.DialogText))
+                if (step.PreSetup.DialogText == null || dialog.Message.Contains(VariableHelper.ReplaceVars(step.PreSetup.DialogText, ctx.ScopeChain, ctx.Vars)))
                 {
                     if (step.PreSetup.DialogHandler == "auto_accept") dialog.AcceptAsync();
                     else dialog.DismissAsync();
@@ -141,7 +141,7 @@ public class StepExecutor
         var fieldName = step.Field ?? VariableHelper.InferFieldFromValue(step.Value);
         var fieldDef = VariableHelper.GetFieldDefinition(fieldName, script);  // 改动7：递归查找（修 N5）
         var value = VariableHelper.ApplyFormat(VariableHelper.ApplyTransform(rawValue, fieldDef?.Transform), fieldDef?.Format, fieldDef?.Type);
-        await frame.Locator(selector!).FillAsync(value, new() { Timeout = timeout });
+        await frame.Locator(selector!).FillAsync(value!, new() { Timeout = timeout });
         if (step.PressEnter == true)
             await frame.Locator(selector!).PressAsync("Enter", new() { Timeout = timeout });
 
@@ -157,7 +157,7 @@ public class StepExecutor
         var fieldName = step.Field ?? VariableHelper.InferFieldFromValue(step.Value);
         var fieldDef = VariableHelper.GetFieldDefinition(fieldName, script);  // 改动7：递归查找（修 N5）
         var value = VariableHelper.ApplyFormat(VariableHelper.ApplyTransform(rawValue, fieldDef?.Transform), fieldDef?.Format, fieldDef?.Type);
-        await frame.Locator(selector!).PressSequentiallyAsync(value, new() { Timeout = timeout });
+        await frame.Locator(selector!).PressSequentiallyAsync(value!, new() { Timeout = timeout });
         if (step.PressEnter == true)
             await frame.Locator(selector!).PressAsync("Enter", new() { Timeout = timeout });
 
@@ -192,7 +192,7 @@ public class StepExecutor
                     new() { Timeout = timeout });
                 break;
             default:
-                await frame.Locator(selector!).SelectOptionAsync(new[] { value }, new() { Timeout = timeout });
+                await frame.Locator(selector!).SelectOptionAsync(new[] { value! }, new() { Timeout = timeout });
                 break;
         }
 
@@ -349,7 +349,7 @@ public class StepExecutor
             var pollInterval = step.PollInterval ?? _options.WaitCheckInterval;
             var effectiveTimeout = step.Timeout ?? timeout;
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            while (!await _detectEvaluator.EvaluateAsync(step.Until, ctx.ActivePage, script, phaseIframe, ctx.Vars, ctx.ScopeChain))
+            while (!await _detectEvaluator.EvaluateAsync(step.Until, ctx.ActivePage, script, phaseIframe, ctx.Vars, ctx.ScopeChain, ctx.RowBaselineStack))
             {
                 if (sw.ElapsedMilliseconds > effectiveTimeout)
                 {
@@ -371,7 +371,7 @@ public class StepExecutor
     private async Task<StepResult?> ExecuteCheckAsync(StepNode step, ExecutionContext ctx, ScriptV2 script, string[]? phaseIframe)
     {
         if (step.Detect == null) return null;
-        var trigger = await _detectEvaluator.EvaluateAsync(step.Detect, ctx.ActivePage, script, phaseIframe, ctx.Vars, ctx.ScopeChain);
+        var trigger = await _detectEvaluator.EvaluateAsync(step.Detect, ctx.ActivePage, script, phaseIframe, ctx.Vars, ctx.ScopeChain, ctx.RowBaselineStack);
         return trigger ? new StepResult(null) { ControlFlow = new(step) } : null;
     }
 
@@ -389,7 +389,7 @@ public class StepExecutor
             var dialog = await dialogTcs.Task;
             ctx.Vars["_lastDialogMessage"] = dialog.Message;
             if (step.Accept ?? true)
-                await dialog.AcceptAsync(step.DialogPromptText);
+                await dialog.AcceptAsync(VariableHelper.ReplaceVars(step.DialogPromptText ?? "", ctx.ScopeChain, ctx.Vars));
             else
                 await dialog.DismissAsync();
             return new StepResult(dialog.Message);
@@ -556,6 +556,17 @@ public class StepExecutor
             throw new InvalidOperationException("captcha action 需要 CaptchaService，请通过 DI 注入");
 
         var captchaService = _captchaService;
+
+        // dreamy D2：captcha 5 selector 统一 ReplaceVars（散布在多 case text/slide/pixel/click 直接读 step.XxxSelector 不经 ReplaceVars，
+        // 在入口对 step 本体统一替换，后续 case 读 step.XxxSelector 自动拿替换后值；null 保持 null 不破坏 `?? selector` fallback）
+        step = step with
+        {
+            ImageSelector = step.ImageSelector != null ? VariableHelper.ReplaceVars(step.ImageSelector, ctx.ScopeChain, ctx.Vars) : null,
+            InputSelector = step.InputSelector != null ? VariableHelper.ReplaceVars(step.InputSelector, ctx.ScopeChain, ctx.Vars) : null,
+            SliderSelector = step.SliderSelector != null ? VariableHelper.ReplaceVars(step.SliderSelector, ctx.ScopeChain, ctx.Vars) : null,
+            TargetSelector = step.TargetSelector != null ? VariableHelper.ReplaceVars(step.TargetSelector, ctx.ScopeChain, ctx.Vars) : null,
+            BackgroundSelector = step.BackgroundSelector != null ? VariableHelper.ReplaceVars(step.BackgroundSelector, ctx.ScopeChain, ctx.Vars) : null,
+        };
 
         // H.4.5：删内层 retry 循环——captcha 不自建 retry，失败直接抛错由外层 ExecuteStepWithRetryAndFallbackAsync 统一 retry（重新执行含截图全流程，语义保留）
         switch (step.CaptchaType)

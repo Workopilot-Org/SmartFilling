@@ -6,7 +6,7 @@ namespace SmartFilling.App.Tests;
 /// <summary>
 /// 决策 D3/F⑤：录制期 loop 内多独立 input selector 行索引参数化纯逻辑单测。
 /// 直接调 ParametrizeRowIndex（不依赖浏览器），验参数化正则结果（属性优先 → 位置回退 → 多匹配歧义）。
-/// 对齐回放 ScriptEngine loop（{{rowIndex}} 经 ReplaceVars 替换为 rowIdx+offset）。
+/// 对齐回放 ScriptEngine loop（{{_rowIndex}} 经 ReplaceVars 替换为 rowIdx+offset）。
 /// 对应计划 F⑤ 6 用例 + mode 覆盖。
 /// </summary>
 public class RecordingActionExecutorRowIndexTests
@@ -17,7 +17,7 @@ public class RecordingActionExecutorRowIndexTests
     public void Attr_RowIndex_Single_Parametrized()
     {
         var (sel, amb) = RecordingActionExecutor.ParametrizeRowIndex("//*[@rowindex='1' and @colname='F_X']", null);
-        Assert.Equal("//*[@rowindex='{{rowIndex}}' and @colname='F_X']", sel);
+        Assert.Equal("//*[@rowindex='{{_rowIndex}}' and @colname='F_X']", sel);
         Assert.False(amb);
     }
 
@@ -25,7 +25,7 @@ public class RecordingActionExecutorRowIndexTests
     public void Attr_DataRow_Single_Parametrized()
     {
         var (sel, amb) = RecordingActionExecutor.ParametrizeRowIndex("//tr[@data-row='2']//input", null);
-        Assert.Equal("//tr[@data-row='{{rowIndex}}']//input", sel);
+        Assert.Equal("//tr[@data-row='{{_rowIndex}}']//input", sel);
         Assert.False(amb);
     }
 
@@ -33,7 +33,7 @@ public class RecordingActionExecutorRowIndexTests
     public void Position_Tr_Single_Parametrized()
     {
         var (sel, amb) = RecordingActionExecutor.ParametrizeRowIndex("//tbody/tr[3]/td/input", null);
-        Assert.Equal("//tbody/tr[{{rowIndex}}]/td/input", sel);
+        Assert.Equal("//tbody/tr[{{_rowIndex}}]/td/input", sel);
         Assert.False(amb);
     }
 
@@ -60,7 +60,7 @@ public class RecordingActionExecutorRowIndexTests
     {
         // 属性优先：@rowindex='1' 命中（count=1）→ 参数化属性并返回，不碰 tr[2]（位置回退不触发）
         var (sel, amb) = RecordingActionExecutor.ParametrizeRowIndex("//*[@rowindex='1']//tr[2]", null);
-        Assert.Equal("//*[@rowindex='{{rowIndex}}']//tr[2]", sel);
+        Assert.Equal("//*[@rowindex='{{_rowIndex}}']//tr[2]", sel);
         Assert.False(amb);
     }
 
@@ -80,7 +80,7 @@ public class RecordingActionExecutorRowIndexTests
     {
         // mode=position：仅位置模式，忽略属性优先 → 参数化 tr[2]（不动 @rowindex='1'）
         var (sel, amb) = RecordingActionExecutor.ParametrizeRowIndex("//*[@rowindex='1']//tr[2]", "position");
-        Assert.Equal("//*[@rowindex='1']//tr[{{rowIndex}}]", sel);
+        Assert.Equal("//*[@rowindex='1']//tr[{{_rowIndex}}]", sel);
         Assert.False(amb);
     }
 

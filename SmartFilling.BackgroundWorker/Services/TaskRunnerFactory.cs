@@ -35,7 +35,7 @@ public class TaskRunnerFactory
             {
                 ApiKey = apiKey,
                 ModelId = _configuration["AiProvider:ModelId"] ?? "deepseek-v3.2",
-                Endpoint = _configuration["AiProvider:Endpoint"],
+                Endpoint = _configuration["AiProvider:Endpoint"] ?? "",
                 CircuitBreakerThreshold = _configuration.GetValue("AiProvider:CircuitBreakerThreshold", 5),
             };
         }

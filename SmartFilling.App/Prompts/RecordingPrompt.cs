@@ -54,11 +54,36 @@ internal static class RecordingPrompt
         | closeTab | index（可选，0-based 关指定标签页，不支持 -1；省略关当前页） |
         | switchTab | index（切到指定标签页，-1=最后一个；新标签页打开会自动切换，无需显式传，仅切到已存在的 tab 时用） |
 
+        ## operate selector/value 参数化（录制期用实际值，代码自动落盘 {{fieldName}}）
+
+        **核心规则**：operate 的 selector/value 录制期**真实执行 DOM 定位/填值**，必须用**实际值**（页面真实值，如任务描述/已注册字段的值），**不要手写 {{}} 占位符**。代码自动参数化落盘 {{fieldName}}。误写 {{}} 会触发守卫 request_help 引导用实际值。
+
+        **区别 detect selector**：detect/until/condition（check/wait）录制期不执行 DOM 定位，回放期 ReplaceVars，**可用 {{vars}}**（仅 detect，operate 不可）。
+
+        **按业务值出现位置传参**：
+        - **value（fill/type/select）**：传实际业务值 + `fieldName`，代码整体参数化为 {{fieldName}}。
+          - **fill vs type**：fill 清空覆盖（用户名/密码/抬头等整体填入）；type 不清空追加（"追加/接着输入/补充/逐字键入"或需触发 keydown/keyup）。任务描述含「追加/接着输入/补充」-> type；含「填写/填入/输入/设置为」-> fill。
+        - **selector 文本锚点**（normalize-space/contains）：传实际文本 + `fieldName`，代码自动参数化为 {{fieldName}}。**引号内须纯业务值（无固定前缀）**——若页面文本含固定前缀（如 `C021_上海家化` 中 `C021_` 固定、`上海家化` 业务值），不要用文本锚点（代码整体替换会丢前缀致回放不匹配），改用属性锚点 + `bizValues`（搜替换业务片段保前缀）或 `ref` 让代码提取。
+        - **selector 属性锚点**（@id/@data-code='业务值'）/拼接（dc_021）：传实际值 + `bizValues:[{value,field}]`（值+字段名），代码搜替换为 {{field}}（保留前缀，如 dc_021→dc_{{companyCode}}）。
+        - **url**（navigate 含业务 ID）：传实际值 + `bizValues`，代码搜替换。
+
+        **判断业务值 vs 固定值**：据任务描述判断（任务描述列的业务数据是业务值，UI 文案/开发标识是固定值）。不确定 request_help。
+
+        **切分**：拼接传片段保留前缀（dc_021 传 bizValue "021"，不传 "dc_021"）。
+
+        **bizValues 字段**：field 必须是已注册字段（本 step fieldName 或前 step 已注册），未注册校验失败 request_help。
+        - **field 从哪取**：每轮「当前录制状态」的 `registeredFields` 数组列出已注册字段名，bizValues.field 从中取。若业务值对应的字段尚未注册（如 click 属性锚点 `dc_021` 的公司编码尚未在任何 fill/type 注册过），先用 fill/type 在某输入框注册该字段（传 fieldName+fieldLabel），再在后续 step 的 bizValues 引用；不确定字段名时 request_help 问用户，**不要自己编一个看起来合理的英文名**。
+        - **自动推导**（fill/type/select 无需手动传 bizValues）：fill/type/select 的 value+fieldName 代码自动推导入 bizValues（整值参数化 + bizValues 搜替换同款），手动重复传同值会被去重（无害但无意义）；只有属性锚点/拼接/url/iframe 链等含业务片段但非整值的字段才需手动传 bizValues。
+
+        **loop phase 内的 click 文本**：用**实际文本值**（页面真实值，如步骤13 fill 的合同编号）+ `fieldName`，代码自动参数化为 {{fieldName}} 落盘。不要手写 {{}}。
+
+        **跨步骤引用同变量用同 varName**：引用前步存储的变量/字段时，用**同 fieldName** 作 `{{varName}}`（如步骤13 fill `fieldName=preApplyCode`，步骤15 click selector 引用该值用 `{{preApplyCode}}`，**不要**用 `{{applyCode}}` 等不同名）。代码按 fieldName 缓存实际值供后续步骤守卫复用（同变量只问一次用户），varName 不一致则缓存查不到重复问用户。
+
         ## 可选字段说明
 
         - **select 的 matchBy**：select 默认按 value 匹配 option；自定义 select / 按可见文本选传 `matchBy=label`（value 是显示名而非内部值，如选"已通过"而非 value="1"）；按顺序选传 `matchBy=index`（value 传 0-based 数字）。不传时按 value 匹配（默认）。**matchBy=label/index 时不做 format 转换**（label/index 依赖原始值，format 会破坏匹配）。
         - **upload 多文件 — 三分支（据任务描述，决策 D3）**：
-          - **「逐行/每行一个/明细行各传到各自的框」**（多独立 input，每行一个文件框）→ 创建 loop phase（`phaseType=loop` + `phaseLoopSource=attachments`），loop 内录 upload，**传 `rowIndexed:true`**（代码把 selector 行索引→`{{rowIndex}}`，对齐回放逐行）；目标 1-based 时传 `phaseRowIndexOffset:1`。行索引模式可选 `rowIndexMode:attr`（@rowindex/@data-row 属性）或 `position`（tr[N] 位置），省略=自动（属性优先回退位置）。
+          - **「逐行/每行一个/明细行各传到各自的框」**（多独立 input，每行一个文件框）→ 创建 loop phase（`phaseType=loop` + `phaseLoopSource=attachments`），loop 内录 upload，**传 `rowIndexed:true`**（代码把 selector 行索引→`{{_rowIndex}}`，对齐回放逐行）；目标 1-based 时传 `phaseRowIndexOffset:1`。行索引模式可选 `rowIndexMode:attr`（@rowindex/@data-row 属性）或 `position`（tr[N] 位置），省略=自动（属性优先回退位置）。
           - **「批量/一次/全部传同一框」**（JS 附件列表控件，同 input、每次上传触发 JS 累积）→ 创建 loop phase（`phaseLoopSource=attachments`），loop 内录单个 upload（关联附件 fieldName），**不传 `rowIndexed`**（同 input 累积）；录制期逐个上传模拟回放。
           - **单个 `<input multiple>` 一次传多文件** → 普通 upload（不 loop）。
           - **任务描述提到附件但没说逐行/批量** → 调 `request_help` 问「附件是逐行上传到各行各自的框，还是一次性传同一框？」
@@ -292,7 +317,7 @@ internal static class RecordingPrompt
         1. **fill / type / select**：输入业务数据时
         2. **click 选择业务值**：下拉选项 / 列表项 / radio / checkbox / 日期单元
         3. **loop phase 内的 click 文本**：必须参数化
-        4. **upload**：上传附件时（关联附件字段；脚本 filePath 存 `{{fieldName}}`，loop 真迭代存 `{{path}}`）
+        4. **upload**：上传附件时（关联附件字段；脚本 filePath 存 `{{fieldName}}`，loop 真迭代存 `{{_path}}`）
 
         **不需要 fieldName**：click 提交/保存/取消等按钮、导航/Tab 切换、折叠展开图标。
 
@@ -315,11 +340,39 @@ internal static class RecordingPrompt
         - `phase`：当前 phase 名称
         - `phaseType`：phase 类型（sequential/loop/ai），仅首次传入时需要
         - `phaseAiGoal`：phase 业务目标（**必填**），首次创建 phase 时传入简短目标描述（如「填写合同信息」「上传附件」），用于 AI fallback/ai phase；缺失会导致脚本加载失败
-        - `phaseLoopSource`：loop phase 的循环数据源字段名，仅 loop 类型需要。**写裸字段名（不写 `{{}}`，如 `items` 而非 `{{items}}`），且必须是 fields 中 `type=array` 的字段名**（明细表）；写错会导致 loop 0 迭代、明细行不填
+        - `phaseLoopSource`：loop phase 的循环数据源字段名，仅 loop 类型需要。**写裸字段名（不写 `{{}}`，如 `items` 而非 `{{items}}`）**。**若该字段未注册，传 `phaseFieldType`（table/items/file）+ `phaseFieldLabel` 让代码自动注册；已注册则代码直接用（传了 phaseFieldType/phaseFieldLabel/phaseFieldItems 会被忽略）**；写错会导致 loop 0 迭代、明细行不填
+        - `phaseFieldType`：loopSource 未注册时自动注册的字段类型，三选一：
+          - `table`：明细表（多列），代码注册 bare array（`type=array, uiComponent=table, Fields=[]`），子列由循环内 operate 增量注册（**loop 内至少 operate 一个子列，否则空 loop 保存被拒**）。配 `phaseFieldLabel`
+          - `items`：简单值列表（标量数组），代码注册 `type=array, Items=phaseFieldItems`，循环内用 `{{_rowItem}}` 引用当前元素。需配 `phaseFieldItems`
+          - `file`：纯附件上传，代码注册 `type=file, uiComponent=upload, multiple=true`，循环内用 `{{_path}}` 引用当前行附件 path。无子字段
+          - 不传 `phaseFieldType`（或推断不出）→ 代码问用户 a/b/c，兜底 table
+        - `phaseFieldItems`：仅 `phaseFieldType=items` 时配（元素类型定义，结构同 `fieldItems`）；table/file 传了忽略。已注册则忽略
+        - `phaseFieldLabel`：loopSource 字段的 label（缺省用 loopSource 名），三类型都用
+
+        **phaseFieldType 示例**（loopSource 未注册时自动注册，省一步 operate 注册）：
+        ```json
+        // table 明细表：ensure_phase 传 phaseLoopSource + phaseFieldType=table + phaseFieldLabel，代码注册 items 为 bare array 字段
+        // 子列 materialName/unit/quantity 由循环内 operate fill 增量注册（不在此一次性传全——录制时无 fillData 难猜子列）
+        "phaseLoopSource": "items",
+        "phaseFieldType": "table",
+        "phaseFieldLabel": "明细表"
+
+        // items 简单值列表：传 phaseFieldType=items + phaseFieldItems
+        "phaseLoopSource": "tags",
+        "phaseFieldType": "items",
+        "phaseFieldItems": {"type": "string"},
+        "phaseFieldLabel": "标签"
+
+        // file 纯附件上传：传 phaseFieldType=file
+        "phaseLoopSource": "attachments",
+        "phaseFieldType": "file",
+        "phaseFieldLabel": "附件"
+        ```
         - `parentPhase`：嵌套 phase 的父 phase 名称（顶层 phase 不传）
         - `phaseOnError`：phase 整体失败策略，取值同 onError（stop/skip/ai-fallback-stop/ai-fallback-skip），仅首次创建 phase 时传。多数 phase 不需要。
+        - **phase.Condition / phase.LoopCondition 支持 `{{}}` 占位符**：phase 条件（condition/loopCondition）内的 selector/value/keywords/iframe 等字段支持 `{{字段名}}`/`{{变量}}`/`{{_rowIndex}}` 占位符，回放时自动替换（与 step 级 detect 同款）。若含业务值（如 `{{company}}`），手写占位符，代码不自动参数化——phase 条件创建时一次性传入 EnsurePhaseAsync（非 step 逐步操作），不经过 bizValues 搜替换，录制守卫 `!Contains("{{")` 跳过校验原样落盘。（详细规则见操作手册「phase 级字段的变量支持」节。）
 
-        > **命名规则（字段名 / storeAs）**：① 字段名与 storeAs 变量名都不能与系统保留变量同名（`rowIndex`/`_lastUrl`/`_lastRowCount`/`lastError`——会遮蔽系统变量静默取错值）；② storeAs 变量名不要与任何字段名同名（运行时 fillData 会永久遮蔽同名 storeAs）；③ 同名 storeAs 后者覆盖前者（故意覆盖允许）；④ 字段名 `username`/`password` 是系统凭据字段（Worker fillData 硬编码这两个 key 存 payload 传来的用户名/解密密码），其 `fieldSource` 必须为 `system`（其他 source 会被 Worker 硬编码值覆盖，`{{username}}`/`{{password}}` 取错值）；⑤ storeAs 变量名不能用 `username`/`password`（会被 fillData 系统凭据永久遮蔽取错值）。违反①②④⑤录制期会被拒、落盘校验也会拒。
+        > **命名规则（字段名 / storeAs）**：① 字段名与 storeAs 变量名都不能与系统保留变量同名（`_rowIndex`/`_lastError`/`_lastUrl`/`_rowItem`/`_path`/`_name`/`_url`/`_lastDialogMessage`/`_lastAiFallbackError`——会遮蔽系统变量静默取错值（`_lastRowCountStack` 已移出 vars 不在保留字清单））；② storeAs 变量名不要与任何字段名同名（运行时 fillData 会永久遮蔽同名 storeAs）；③ 同名 storeAs 后者覆盖前者（故意覆盖允许）；④ 字段名 `username`/`password` 是系统凭据字段（Worker fillData 硬编码这两个 key 存 payload 传来的用户名/解密密码），其 `fieldSource` 必须为 `system`（其他 source 会被 Worker 硬编码值覆盖，`{{username}}`/`{{password}}` 取错值）；⑤ storeAs 变量名不能用 `username`/`password`（会被 fillData 系统凭据永久遮蔽取错值）。违反①②④⑤录制期会被拒、落盘校验也会拒。
 
         **代码自动处理**：selector 提取、iframe 检测、新标签页自动 switchTab、URL 变化记录、失败时自动触发 request_help
 
@@ -398,6 +451,8 @@ internal static class RecordingPrompt
         - (j) 指认目标 frame：**多 frame 命中求助时出现**——输入 frame 编号
         - (l) 用代码已提取的 HTML：**仅 priority 9（7阶段全失败）/ priority 8 脆弱 selector / iframe 脆弱层求助时出现**--代码已抓元素 outerHTML/iframe ctx 全量喂给你，你据此手写稳定 selector（不想手粘 HTML 时选此项），下轮 operate/save_step 传 selector（不传 ref）重试
         - (k) 其它（自由描述）：**所有求助默认含**——回复可不带字母，你自由分析用户描述后决定下一步（换 selector / 改 detect 类型 / request_help 追问等）
+
+        **生成 selector 原则**（求助后重新 operate 时）：文本匹配部分（normalize-space/contains）用**当前页面实际看到的值**（非 {{}} 占位符），代码会自动参数化为 {{fieldName}}。属性锚点（@id/@data-code='业务值'）/拼接（dc_021）用实际值 + `bizValues:[{value,field}]`，代码搜替换保前缀。
 
         **用户回答后如何处理**（按用户选择重新 operate/save_step 带对应参数；同 phase 同 step name 会重名，必须换元素/换方式重试而非重录同名 step）：
         - 用户选 (a) 重新定位 → 调 get_snapshot 获取最新快照，用新 ref 重新 operate
@@ -547,7 +602,7 @@ internal static class RecordingPrompt
         ## 通用注意
 
         - 所有步骤必须有 `description`（简短描述操作意图）
-        - loop phase 内使用 `{{rowIndex}}` 引用当前行索引
+        - loop phase 内使用 `{{_rowIndex}}` 引用当前行索引
         - 附件上传步骤用 `fieldName` 关联附件字段（代码用录制前上传的附件真实上传到 input；脚本 filePath 存 `{{fieldName}}`，回放期 fillData 动态附件）。**不要用 value 传文件路径/占位符**（执行层用注入附件，传 value 无效）
         - 关键操作后**若需区分成功/失败分支**才添加 check；若仅是等待结果出现/跳转完成，用 wait 即可，**不要在 wait 之后再叠同条件 check**（见「等待与验证」语义A/语义B 判定）
         - 遇到对话框频繁出现的操作，在 click 步骤添加 `preSetup: { dialogHandler: "auto_accept" }`
@@ -585,7 +640,7 @@ internal static class RecordingPrompt
         {
             sb.Append("\n\n# 当前表单字段定义\n\n");
             sb.Append(fieldsJson);
-            sb.Append("\n\n请根据以上字段定义录制脚本。传参时 value 传**实际要填入浏览器的值**（如任务描述中的用户名、日期等），代码会自动将 value 参数化为 {{字段名}} 保存到脚本中。");
+            sb.Append("\n\n请根据以上字段定义录制脚本。传参时 value 传**实际要填入浏览器的值**（如任务描述中的用户名、日期等），代码会自动将 value 参数化为 {{字段名}} 保存到脚本中（fill/type/select 整值替换）。属性锚点/拼接/url/key 等含业务片段的字段，另传 `bizValues:[{value,field}]` 指示业务值，代码搜替换保留前缀如 `备注：021`→`备注：{{companyCode}}`。⚠️ operate selector/value 录制期用实际值，不要手写 {{}}（误写会触发守卫 request_help）；detect/until/condition 可用 {{vars}}。");
         }
 
         if (!string.IsNullOrEmpty(iframeContext))

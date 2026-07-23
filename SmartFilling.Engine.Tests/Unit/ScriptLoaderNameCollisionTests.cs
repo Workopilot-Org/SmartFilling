@@ -23,14 +23,14 @@ public class ScriptLoaderNameCollisionTests
     [Fact]
     public void FieldName_IsReservedVar_Rejected()
     {
-        // 🔴-3：字段名=系统保留字（如 rowIndex——极自然的明细表字段名）
+        // 🔴-3：字段名=系统保留字（如 _rowIndex——极自然的明细表字段名）
         var script = new ScriptBuilder()
-            .AddField("rowIndex", "行号")
+            .AddField("_rowIndex", "行号")
             .AddPhase("main", aiGoal: "测试", steps: [ScriptBuilder.CheckStep(ScriptBuilder.Detect("always"), "nothing")])
             .Build();
 
         var ex = Assert.Throws<InvalidOperationException>(() => ScriptLoader.Validate(script));
-        Assert.Contains("rowIndex", ex.Message);
+        Assert.Contains("_rowIndex", ex.Message);
         Assert.Contains("系统保留变量", ex.Message);
     }
 
@@ -38,11 +38,11 @@ public class ScriptLoaderNameCollisionTests
     public void StoreName_IsLastError_Rejected()
     {
         var script = new ScriptBuilder()
-            .AddPhase("main", aiGoal: "测试", steps: [ScriptBuilder.Step("extract", selector: "#x", storeAs: "lastError", property: "textContent")])
+            .AddPhase("main", aiGoal: "测试", steps: [ScriptBuilder.Step("extract", selector: "#x", storeAs: "_lastError", property: "textContent")])
             .Build();
 
         var ex = Assert.Throws<InvalidOperationException>(() => ScriptLoader.Validate(script));
-        Assert.Contains("lastError", ex.Message);
+        Assert.Contains("_lastError", ex.Message);
     }
 
     [Fact]
@@ -62,9 +62,9 @@ public class ScriptLoaderNameCollisionTests
     [Fact]
     public void StepPlaceholder_LastError_NowAllowed()
     {
-        // 第6轮 fix：specialVars 复用 ReservedVarNames（含 lastError）→ step 里 {{lastError}} 放行（原被拒"字段未定义"）
+        // 第6轮 fix：specialVars 复用 ReservedVarNames（含 _lastError）→ step 里 {{_lastError}} 放行（原被拒"字段未定义"）
         var script = new ScriptBuilder()
-            .AddPhase("main", aiGoal: "测试", steps: [ScriptBuilder.Step("fill", selector: "#x", value: "{{lastError}}")])
+            .AddPhase("main", aiGoal: "测试", steps: [ScriptBuilder.Step("fill", selector: "#x", value: "{{_lastError}}")])
             .Build();
 
         var ex = Record.Exception(() => ScriptLoader.Validate(script));

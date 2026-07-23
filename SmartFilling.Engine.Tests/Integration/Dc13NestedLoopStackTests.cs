@@ -9,7 +9,7 @@ using ExecutionContext = SmartFilling.Engine.Engine.ExecutionContext;
 namespace SmartFilling.Engine.Tests.Integration;
 
 /// <summary>
-/// 24 DC13（a-a-4 B，2026-07-08）：new_row_appears _lastRowCountStack 栈协同嵌套 loop 隔离测试。
+/// 24 DC13（a-a-4 B，2026-07-08；改动13 P12 方式 A _lastRowCountStack 移出 vars→ctx.RowBaselineStack）：new_row_appears RowBaselineStack 栈协同嵌套 loop 隔离测试。
 /// 验证嵌套 loop 各自独立栈层（每行迭代 Push、出口 Pop 对称；Peek 取当前 loop 基线）--防回归：原单 key _lastRowCount 共享，
 /// 内层覆盖外层 -> 外层 new_row_appears 比对错 silent（DC13 评级 🔴）。冒烟：嵌套 loop + new_row_appears 执行不崩 = 栈 Push/Pop 对称不 leak。
 /// </summary>
@@ -130,6 +130,6 @@ public class Dc13NestedLoopStackTests
     }
 
     private static System.Collections.Generic.Stack<int> GetStack(ExecutionContext ctx)
-        => (System.Collections.Generic.Stack<int>)ctx.Vars["_lastRowCountStack"];
+        => ctx.RowBaselineStack;  // 改动13：_lastRowCountStack 移出 vars 到 ExecutionContext.RowBaselineStack（P12 方式 A 根治）
     private static int StackPeek(ExecutionContext ctx) => GetStack(ctx).Peek();
 }

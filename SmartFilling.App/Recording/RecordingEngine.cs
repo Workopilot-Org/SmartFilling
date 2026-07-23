@@ -62,6 +62,11 @@ public class RecordingEngine
     private TaskCompletionSource<string>? _pendingHelpTcs;
     private string? _username;  // F8：系统凭据（RecordAsync 设），operate 执行层替换 {{username}} 填浏览器用
     private string? _password;  // F8：系统凭据，明文不进 AI 上下文（BuildDataHints 仅占位符提示）
+    // dreamy F4：录制期变量值缓存（Dictionary<varName, 实际值>），per-recording 作用域（RecordAsync 入口清空，对齐 _isDone/_username/_password）。
+    // 用户给值后 AI 用实际值重调 operate，代码在参数化点（E1 bizValues caller + A/B 内部）填缓存 fieldName→实际值；
+    // 后续步骤引用同变量时守卫 TrySubstituteFromRecordVars 命中直接用缓存值执行，不再问用户（同变量只问一次）。
+    // ⚠️ 清空点在 RecordAsync 入口（per-recording），不在 ClearAcceptedSets（per-step）——后者会每步清空破坏跨步骤复用（R2-1 修正）。
+    private readonly Dictionary<string, string> _recordVarValues = new();
     private List<AttachmentInfo>? _attachments;  // 批次7-C3：录制期附件（RecordController.Start 传入；upload 执行层 SetInputFiles + BuildDataHints 提示用）
 
     // 辅助属性
@@ -138,6 +143,11 @@ public class RecordingEngine
 
     /// <summary>测试注入：绕过真实浏览器创建（生产不调用，_page 默认 null 走正常创建）。App.Tests 用 InternalsVisibleTo 访问。</summary>
     internal IPage? TestInjectedPage { set => _page = value; }
+    /// <summary>P15 测试支持（2026-07-23）：访问 _pendingHelpTcs 供测试 mock 回复 a/b/c（问用户兜底测试用，照 TestInjectedPage 模式；getter 读 ExecuteRequestHelpAsync 新建的当前 tcs，TrySetResult 模拟用户回复）。</summary>
+    internal TaskCompletionSource<string>? TestPendingHelpTcs { get => _pendingHelpTcs; set => _pendingHelpTcs = value; }
+
+    /// <summary>测试只读访问：自动注册后的字段结构断言（Fields.Count/子列 Name/Label/Type/层级）。App.Tests 经 InternalsVisibleTo 访问。</summary>
+    internal ScriptV2 Script => _script;
 
     public async Task<ScriptV2> RecordAsync(
         string documentTypeId,
@@ -153,6 +163,7 @@ public class RecordingEngine
         _isDone = false;
         _username = username;  // F8：存系统凭据，供 operate 执行层替换 {{username}}/{{password}}
         _password = password;
+        _recordVarValues.Clear();  // dreamy F4：per-recording 清空（对齐 _isDone/_username/_password；不在 ClearAcceptedSets 防每步清空破坏跨步骤复用）
 
         try
         {
@@ -282,7 +293,7 @@ public class RecordingEngine
                     continue;
                 }
 
-                foreach (var tc in response.ToolCalls)
+                foreach (var tc in response.ToolCalls!)
                 {
                     var result = await ExecuteRecordingToolAsync(tc, ct);
                     _messages.Add(new ToolChatMessage(tc.Id, result));
@@ -423,9 +434,9 @@ public class RecordingEngine
         return
         [
             ChatTool.CreateFunctionTool("operate", "执行交互操作（click/fill/type/select/hover/pressKey/scroll/upload/navigate/goBack/reload/switchTab/closeTab）",
-                BinaryData.FromString("""{"type":"object","properties":{"action":{"type":"string","enum":["click","fill","type","select","hover","pressKey","scroll","upload","navigate","goBack","reload","switchTab","closeTab"]},"selector":{"type":"string","description":"XPath 选择器（ref 不可用时备用）"},"ref":{"type":"string","description":"快照中的元素引用编号，如 e27。有 ref 时优先使用 ref 而非 selector"},"value":{"type":"string"},"url":{"type":"string","description":"navigate 操作的目标 URL"},"key":{"type":"string"},"description":{"type":"string"},"fieldName":{"type":"string","description":"关联的字段名，用于参数化和字段注册"},"fieldLabel":{"type":"string","description":"字段中文标签，用于字段注册"},"fieldType":{"type":"string","enum":["string","number","date","boolean","file","array"],"description":"字段数据类型：string（默认）/number/date/boolean/file/array。覆盖代码推断"},"fieldUiComponent":{"type":"string","enum":["input","textarea","select","radio","checkbox","upload","click-choose","datepicker","hidden","table"],"description":"UI组件：input/textarea/select/radio/checkbox/upload/click-choose/datepicker/hidden/table。覆盖代码推断"},"fieldSource":{"type":"string","enum":["user","system","computed"],"description":"数据来源：user（默认）/system（系统变量如username/password，不询问用户）/computed"},"fieldRequired":{"type":"boolean","description":"代码已检测HTML5 required、aria-required、CSS伪元素星号、关联label星号、UI框架required class。未检测到时会提示⚠️，此时传true"},"fieldOptions":{"type":"array","items":{"type":"string"},"description":"代码已提取原生select选项。自定义select未提取到时会提示⚠️，此时传选项数组"},"fieldDescription":{"type":"string","description":"字段说明，描述字段含义和填写规则"},"fieldFormat":{"type":"string","description":"格式约束（date: YYYY-MM-DD, number: #,##0.00）"},"fieldTransform":{"type":"string","enum":["trim","upper","lower"],"description":"值变换规则（trim/upper/lower 三选一；date/number 格式转换用 fieldFormat 字段）"},"fieldPattern":{"type":"string","description":"正则校验（如手机号 ^1\\d{10}$）"},"fieldPlaceholder":{"type":"string","description":"输入提示文本（覆盖代码提取）"},"fieldMultiple":{"type":"boolean","description":"是否多选/多文件"},"fieldFields":{"type":"array","description":"table类型字段的子字段数组，每列一个对象：{name,label,type,uiComponent?,required?,source?,description?,format?,options?,placeholder?,pattern?}","items":{"type":"object","properties":{"name":{"type":"string"},"label":{"type":"string"},"type":{"type":"string"},"uiComponent":{"type":"string"},"required":{"type":"boolean"},"source":{"type":"string"},"description":{"type":"string"},"format":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"placeholder":{"type":"string"},"pattern":{"type":"string"}},"required":["name","label"]}},"fieldItems":{"type":"object","description":"简单数组字段的元素类型定义","properties":{"type":{"type":"string","description":"元素类型：string/number/date/boolean"},"format":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"min":{"type":"number"},"max":{"type":"number"}}},"forceAiAction":{"type":"boolean","description":"7阶段selector全失败后，明确保存为ai action"},"acceptFragile":{"type":"boolean","description":"priority 8 脆弱selector/iframe求助后用户选(f)使用脆弱的，下轮operate/save_step传true+同selector/iframe：代码跳过脆弱检测(仍查唯一性/存在性)、落盘+自动onError=ai-fallback-stop。仅对刚求助过的同selector/iframe传；换selector/iframe必须不传(重置)，否则全局绕过脆弱检测"},"acceptAsIs":{"type":"boolean","description":"selector/iframe 找不到(count==0)求助选(h)用当前值后，下轮operate传true+同selector/iframe：代码跳过存在性校验直接落盘+onError=ai-fallback-stop。仅对刚求助过的同值传；换值必须不传(重置)。多匹配(count>1)不适用(回放必失败)"},"phase":{"type":"string","description":"当前 phase 名称。首次传入时自动创建新 phase"},"phaseType":{"type":"string","enum":["sequential","loop","ai"],"description":"phase 类型 sequential(顺序)/loop(循环)/ai(AI自主)，仅首次传入 phase 时需要"},"phaseLoopSource":{"type":"string","description":"loop phase 的循环数据源字段名"},"parentPhase":{"type":"string","description":"嵌套 phase 的父 phase 名称（顶层 phase 不传）"},"pressEnter":{"type":"boolean","description":"fill/type 后按回车"},"skipIfDataEmpty":{"type":"boolean","description":"fillData 字段为空时跳过（null/空串/空数组→跳，0/false→不跳）"},"skipIfElementMissing":{"type":"boolean","description":"元素不存在时跳过"},"condition":{"type":"object","description":"步骤执行前条件检测（detect 对象，必填 type，字段见 check detect 类型表，不满足则跳过本步骤）"},"preSetup":{"type":"object","description":"执行前设置：{dialogHandler:auto_accept或auto_dismiss, dialogText?:prompt输入}"},"retry":{"type":"object","description":"重试配置：{count:次数, interval?:间隔ms}"},"timeout":{"type":"integer","description":"步骤超时(ms)"},"maxAiTurns":{"type":"integer","description":"forceAiAction=true 保存为 ai action 时的 AI 最大轮次"},"doubleClick":{"type":"boolean","description":"click 双击"},"useLast":{"type":"boolean","description":"selector 多匹配时取最后一个"},"rowIndexed":{"type":"boolean","description":"loop 内多独立 input（明细每行各一框），代码将 selector 行索引→{{rowIndex}}。同 input/JS 列表不传"},"rowIndexMode":{"type":"string","enum":["attr","position"],"description":"行索引模式：attr(@rowindex/@data-row)/position(tr[N])。省略=自动（属性优先回退位置）"},"storeAs":{"type":"string","description":"存储变量名。click 存元素 innerText、fill/type 存页面回读实际值、select 存选中值、switchTab 存切换后 URL。任务描述明确要求存这些值才传，否则用 extract。⚠️ closeTab/hover/pressKey/scroll/upload/goBack/reload 不支持 storeAs（配了无效，会被 schema 拒绝）"},"fallback":{"type":"object","description":"备选方案（selector 失败时，缺省继承 step 的 action/field/iframe/timeout）","properties":{"ref":{"type":"string","description":"录制期元素 ref（aria-ref），代码提取为 selector；最终脚本不含"},"selector":{"type":"string"},"action":{"type":"string"},"value":{"type":"string"},"code":{"type":"string"},"iframe":{"type":"array","items":{"type":"string"}},"iframeRef":{"type":"string","description":"iframe 元素 ref（aria-ref），代码提取为 iframe 链；最终脚本不含"},"timeout":{"type":"integer"}}},"name":{"type":"string","description":"步骤名（必传）：基于 action+对象起简短英文名如 fillUsername/clickLogin/navigateLogin/waitLoginLoad/checkDesktop，同 phase 内唯一，goto toStep 目标"},"onError":{"type":"string","enum":["stop","skip","ai-fallback-stop","ai-fallback-skip"],"description":"步骤失败策略 stop 停止(默认,向上传播致脚本失败)/skip 跳过/ai-fallback-stop AI兜底后停/ai-fallback-skip AI兜底后跳过。⚠️ script_fail 是 then 字段的值不要填此；wait 超时想让脚本失败用 stop"},"iframe":{"type":"array","items":{"type":"string"},"description":"iframe selector 链覆盖（根→叶）。常规留空让代码自动提取；仅在收到'iframe 脆弱/提取失败'warning 时，基于 warning 元素属性（id/src/name）生成更稳链、经 iframe 参数覆盖"},"iframeRef":{"type":"string","description":"iframe 元素的 aria-ref（指向 <iframe> 元素本身）。iframe 脆弱/提取失败求助选(i)用 ref 指认 iframe 后，下轮传 iframeRef：代码用 aria-ref 定位 iframe DOM 提取链。仅对刚求助过的同 iframe 传"},"matchBy":{"type":"string","enum":["value","label","index"],"description":"select 匹配方式 value(按值)/label(按可见文本)/index(按0-based序号)，仅 select 用"},"direction":{"type":"string","enum":["up","down","left","right","bottom","top"],"description":"scroll 方向"},"amount":{"type":"integer","description":"scroll 滚动量(px)，默认300"},"index":{"type":"integer","description":"switchTab/closeTab 标签页索引（switchTab 不传则自动检测新tab）"},"phaseCondition":{"type":"object","description":"phase 执行前条件检测（仅首次传入 phase 名时生效）"},"phaseLoopCondition":{"type":"object","description":"loop phase 每轮继续条件（仅首次传入 phase 名时生效）"},"phaseOnError":{"type":"string","enum":["stop","skip","ai-fallback-stop","ai-fallback-skip"],"description":"phase 错误策略 stop/skip/ai-fallback-stop/ai-fallback-skip（仅首次传入 phase 名时生效）"},"phaseMaxLoopCount":{"type":"integer","description":"loop phase 最大循环次数（仅首次传入 phase 名时生效）"},"phaseRowIndexOffset":{"type":"integer","description":"loop phase 行索引偏移量（仅首次传入 phase 名时生效）"},"phaseMaxAiTurns":{"type":"integer","description":"ai phase AI 总轮次预算（仅首次传入 phase 名时生效）"},"phaseTimeout":{"type":"integer","description":"phase 超时(ms)（仅首次传入 phase 名时生效）"},"phaseAiGoal":{"type":"string","description":"phase 业务目标（R3-2 必填，首次创建 phase 时传入简短目标如「填写合同信息」，用于 AI fallback/ai phase；缺失会导致脚本加载失败）"}},"required":["action","description","name"],"allOf":[{"if":{"properties":{"action":{"const":"scroll"}}},"then":{"oneOf":[{"required":["selector"],"not":{"required":["direction"]}},{"required":["direction"],"not":{"required":["selector"]}}]}}]}""")),
+                BinaryData.FromString("""{"type":"object","properties":{"action":{"type":"string","enum":["click","fill","type","select","hover","pressKey","scroll","upload","navigate","goBack","reload","switchTab","closeTab"]},"selector":{"type":"string","description":"XPath 选择器（ref 不可用时备用）"},"ref":{"type":"string","description":"快照中的元素引用编号，如 e27。有 ref 时优先使用 ref 而非 selector"},"value":{"type":"string"},"url":{"type":"string","description":"navigate 操作的目标 URL"},"key":{"type":"string"},"description":{"type":"string"},"fieldName":{"type":"string","description":"关联的字段名，用于参数化和字段注册"},"fieldLabel":{"type":"string","description":"字段中文标签，用于字段注册"},"fieldType":{"type":"string","enum":["string","number","date","boolean","file","array"],"description":"字段数据类型：string（默认）/number/date/boolean/file/array。覆盖代码推断"},"fieldUiComponent":{"type":"string","enum":["input","textarea","select","radio","checkbox","upload","click-choose","datepicker","hidden","table"],"description":"UI组件：input/textarea/select/radio/checkbox/upload/click-choose/datepicker/hidden/table。覆盖代码推断"},"fieldSource":{"type":"string","enum":["user","system","computed"],"description":"数据来源：user（默认）/system（系统变量如username/password，不询问用户）/computed"},"fieldRequired":{"type":"boolean","description":"代码已检测HTML5 required、aria-required、CSS伪元素星号、关联label星号、UI框架required class。未检测到时会提示⚠️，此时传true"},"fieldOptions":{"type":"array","items":{"type":"string"},"description":"代码已提取原生select选项。自定义select未提取到时会提示⚠️，此时传选项数组"},"fieldDescription":{"type":"string","description":"字段说明，描述字段含义和填写规则"},"fieldFormat":{"type":"string","description":"格式约束（date: YYYY-MM-DD, number: #,##0.00）"},"fieldTransform":{"type":"string","enum":["trim","upper","lower"],"description":"值变换规则（trim/upper/lower 三选一；date/number 格式转换用 fieldFormat 字段）"},"fieldPattern":{"type":"string","description":"正则校验（如手机号 ^1\\d{10}$）"},"fieldPlaceholder":{"type":"string","description":"输入提示文本（覆盖代码提取）"},"fieldMultiple":{"type":"boolean","description":"是否多选/多文件"},"fieldFields":{"type":"array","description":"table类型字段的子字段数组，每列一个对象：{name,label,type,uiComponent?,required?,source?,description?,format?,options?,placeholder?,pattern?}","items":{"type":"object","properties":{"name":{"type":"string"},"label":{"type":"string"},"type":{"type":"string"},"uiComponent":{"type":"string"},"required":{"type":"boolean"},"source":{"type":"string"},"description":{"type":"string"},"format":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"placeholder":{"type":"string"},"pattern":{"type":"string"}},"required":["name","label"]}},"fieldItems":{"type":"object","description":"简单数组字段的元素类型定义","properties":{"type":{"type":"string","description":"元素类型：string/number/date/boolean"},"format":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"min":{"type":"number"},"max":{"type":"number"}}},"forceAiAction":{"type":"boolean","description":"7阶段selector全失败后，明确保存为ai action"},"acceptFragile":{"type":"boolean","description":"priority 8 脆弱selector/iframe求助后用户选(f)使用脆弱的，下轮operate/save_step传true+同selector/iframe：代码跳过脆弱检测(仍查唯一性/存在性)、落盘+自动onError=ai-fallback-stop。仅对刚求助过的同selector/iframe传；换selector/iframe必须不传(重置)，否则全局绕过脆弱检测"},"acceptAsIs":{"type":"boolean","description":"selector/iframe 找不到(count==0)求助选(h)用当前值后，下轮operate传true+同selector/iframe：代码跳过存在性校验直接落盘+onError=ai-fallback-stop。仅对刚求助过的同值传；换值必须不传(重置)。多匹配(count>1)不适用(回放必失败)"},"phase":{"type":"string","description":"当前 phase 名称。首次传入时自动创建新 phase"},"phaseType":{"type":"string","enum":["sequential","loop","ai"],"description":"phase 类型 sequential(顺序)/loop(循环)/ai(AI自主)，仅首次传入 phase 时需要"},"phaseLoopSource":{"type":"string","description":"loop phase 的循环数据源字段名。若该字段未注册，传 phaseFieldType（table/items/file）+ phaseFieldLabel 让代码自动注册；已注册则代码直接用（传了 phaseFieldType/phaseFieldLabel/phaseFieldItems 会被忽略）"},"phaseFieldType":{"type":"string","enum":["table","items","file"],"description":"loopSource 未注册时自动注册的字段类型：table=明细表（多列，循环内 operate 增量注册子列，配 phaseFieldLabel）；items=简单值列表（需配 phaseFieldItems）；file=纯附件上传。不传则问用户 a/b/c 兜底 table"},"phaseFieldLabel":{"type":"string","description":"loopSource 字段的 label（未注册时自动注册用，缺省用 loopSource 名）"},"phaseFieldItems":{"type":"object","description":"loopSource 未注册且 phaseFieldType=items 时配的简单数组元素类型（结构同 fieldItems）；table/file 传了忽略","properties":{"type":{"type":"string","description":"元素类型：string/number/date/boolean"},"format":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"min":{"type":"number"},"max":{"type":"number"}}},"parentPhase":{"type":"string","description":"嵌套 phase 的父 phase 名称（顶层 phase 不传）"},"pressEnter":{"type":"boolean","description":"fill/type 后按回车"},"skipIfDataEmpty":{"type":"boolean","description":"fillData 字段为空时跳过（null/空串/空数组→跳，0/false→不跳）"},"skipIfElementMissing":{"type":"boolean","description":"元素不存在时跳过"},"condition":{"type":"object","description":"步骤执行前条件检测（detect 对象，必填 type，字段见 check detect 类型表，不满足则跳过本步骤）"},"preSetup":{"type":"object","description":"执行前设置：{dialogHandler:auto_accept或auto_dismiss, dialogText?:prompt输入}"},"retry":{"type":"object","description":"重试配置：{count:次数, interval?:间隔ms}"},"timeout":{"type":"integer","description":"步骤超时(ms)"},"maxAiTurns":{"type":"integer","description":"forceAiAction=true 保存为 ai action 时的 AI 最大轮次"},"doubleClick":{"type":"boolean","description":"click 双击"},"useLast":{"type":"boolean","description":"selector 多匹配时取最后一个"},"rowIndexed":{"type":"boolean","description":"loop 内多独立 input（明细每行各一框），代码将 selector 行索引→{{_rowIndex}}。同 input/JS 列表不传"},"rowIndexMode":{"type":"string","enum":["attr","position"],"description":"行索引模式：attr(@rowindex/@data-row)/position(tr[N])。省略=自动（属性优先回退位置）"},"storeAs":{"type":"string","description":"存储变量名。click 存元素 innerText、fill/type 存页面回读实际值、select 存选中值、switchTab 存切换后 URL。任务描述明确要求存这些值才传，否则用 extract。⚠️ closeTab/hover/pressKey/scroll/upload/goBack/reload 不支持 storeAs（配了无效，会被 schema 拒绝）"},"bizValues":{"type":"array","description":"dreamy 业务值参数化（属性锚点/拼接/全字段搜替换）：传 [{value,field}]，value=实际业务值（页面真实值/任务描述的业务数据），field=已注册字段名（本步 fieldName 或前步已注册）。代码在 selector/value/url/key/code 等字段搜替换 value 片段为 {{field}} 占位符（保留前缀如 dc_021→dc_{{companyCode}}、备注：021→备注：{{companyCode}}）。用于属性锚点 @id='dc_021'/拼接 dc_021/navigate url 含业务 ID/iframe 链含业务值。fill/type/select 整值无需传（代码自动推导 value+fieldName）；文本锚点 normalize-space/contains 用 fieldName 非 bizValues。field 未注册会被拒。⚠️ operate selector/value 录制期用实际值（不要手写 {{}}，代码自动参数化落盘）；误写 {{}} 会触发守卫 request_help","items":{"type":"object","properties":{"value":{"type":"string"},"field":{"type":"string"}},"required":["value","field"]}},"fallback":{"type":"object","description":"备选方案（selector 失败时，缺省继承 step 的 action/field/iframe/timeout）","properties":{"ref":{"type":"string","description":"录制期元素 ref（aria-ref），代码提取为 selector；最终脚本不含"},"selector":{"type":"string"},"action":{"type":"string"},"value":{"type":"string"},"code":{"type":"string"},"iframe":{"type":"array","items":{"type":"string"}},"iframeRef":{"type":"string","description":"iframe 元素 ref（aria-ref），代码提取为 iframe 链；最终脚本不含"},"timeout":{"type":"integer"}}},"name":{"type":"string","description":"步骤名（必传）：基于 action+对象起简短英文名如 fillUsername/clickLogin/navigateLogin/waitLoginLoad/checkDesktop，同 phase 内唯一，goto toStep 目标"},"onError":{"type":"string","enum":["stop","skip","ai-fallback-stop","ai-fallback-skip"],"description":"步骤失败策略 stop 停止(默认,向上传播致脚本失败)/skip 跳过/ai-fallback-stop AI兜底后停/ai-fallback-skip AI兜底后跳过。⚠️ script_fail 是 then 字段的值不要填此；wait 超时想让脚本失败用 stop"},"iframe":{"type":"array","items":{"type":"string"},"description":"iframe selector 链覆盖（根→叶）。常规留空让代码自动提取；仅在收到'iframe 脆弱/提取失败'warning 时，基于 warning 元素属性（id/src/name）生成更稳链、经 iframe 参数覆盖"},"iframeRef":{"type":"string","description":"iframe 元素的 aria-ref（指向 <iframe> 元素本身）。iframe 脆弱/提取失败求助选(i)用 ref 指认 iframe 后，下轮传 iframeRef：代码用 aria-ref 定位 iframe DOM 提取链。仅对刚求助过的同 iframe 传"},"matchBy":{"type":"string","enum":["value","label","index"],"description":"select 匹配方式 value(按值)/label(按可见文本)/index(按0-based序号)，仅 select 用"},"direction":{"type":"string","enum":["up","down","left","right","bottom","top"],"description":"scroll 方向"},"amount":{"type":"integer","description":"scroll 滚动量(px)，默认300"},"index":{"type":"integer","description":"switchTab/closeTab 标签页索引（switchTab 不传则自动检测新tab）"},"phaseCondition":{"type":"object","description":"phase 执行前条件检测（仅首次传入 phase 名时生效）"},"phaseLoopCondition":{"type":"object","description":"loop phase 每轮继续条件（仅首次传入 phase 名时生效）"},"phaseOnError":{"type":"string","enum":["stop","skip","ai-fallback-stop","ai-fallback-skip"],"description":"phase 错误策略 stop/skip/ai-fallback-stop/ai-fallback-skip（仅首次传入 phase 名时生效）"},"phaseMaxLoopCount":{"type":"integer","description":"loop phase 最大循环次数（仅首次传入 phase 名时生效）"},"phaseRowIndexOffset":{"type":"integer","description":"loop phase 行索引偏移量（仅首次传入 phase 名时生效）"},"phaseMaxAiTurns":{"type":"integer","description":"ai phase AI 总轮次预算（仅首次传入 phase 名时生效）"},"phaseTimeout":{"type":"integer","description":"phase 超时(ms)（仅首次传入 phase 名时生效）"},"phaseAiGoal":{"type":"string","description":"phase 业务目标（R3-2 必填，首次创建 phase 时传入简短目标如「填写合同信息」，用于 AI fallback/ai phase；缺失会导致脚本加载失败）"}},"required":["action","description","name"],"allOf":[{"if":{"properties":{"action":{"const":"scroll"}}},"then":{"oneOf":[{"required":["selector"],"not":{"required":["direction"]}},{"required":["direction"],"not":{"required":["selector"]}}]}}]}""")),
             ChatTool.CreateFunctionTool("save_step", "保存非交互步骤（check/captcha/evaluate/extract/wait/ai/goto/handleDialog/screenshot）",
-                BinaryData.FromString("""{"type":"object","properties":{"stepType":{"type":"string","enum":["check","captcha","evaluate","extract","wait","ai","goto","handleDialog","screenshot"],"description":"非交互步骤类型 check验证/captcha验证码/evaluate执行JS/extract提取/wait等待/aiAI步骤/goto跳转/handleDialog对话框/screenshot截图"},"description":{"type":"string"},"name":{"type":"string","description":"步骤名（必传）：基于 action+对象起简短英文名如 fillUsername/clickLogin/navigateLogin/waitLoginLoad/checkDesktop，同 phase 内唯一，goto toStep 目标"},"ref":{"type":"string","description":"快照中的元素引用编号（如 e27）。selector 类 detect/check 优先用 ref 让代码提取稳定 selector（与 operate 同源）"},"selector":{"type":"string","description":"XPath 选择器"},"value":{"type":"string"},"toPhase":{"type":"string","description":"goto目标phase名"},"toStep":{"type":"string","description":"goto目标step名"},"accept":{"type":"boolean","description":"handleDialog是否接受"},"dialogPromptText":{"type":"string","description":"prompt对话框输入文本"},"screenshotType":{"type":"string","enum":["viewport","fullPage","element"],"description":"截图类型：viewport(可见区域，默认)/fullPage(整页)/element(元素截图)"},"saveToFile":{"type":"boolean","description":"是否保存文件到磁盘，默认true"},"storeContent":{"type":"string","enum":["path","dataUrl","both"],"description":"storeAs存什么：path(文件路径，默认)/dataUrl(图片数据)/both(两者)。saveToFile=false时只能为dataUrl"},"detect":{"type":"object","description":"check的detect条件。selector 类检测优先用 ref 指认元素（代码自动提取 selector），等页面状态用 page_contains/url_changed"},"then":{"type":"string","enum":["nothing","continue","step_error","phase_success","phase_error","phase_rerun","row_rerun","script_success","script_fail","goto","break"],"description":"check的then值（nothing=通过；continue=下一行/loop下一迭代；step_error=按本step onError处理；phase_success/phase_error=phase成功/触发phase onError；phase_rerun/row_rerun=重跑整个phase/当前行；script_success/script_fail=脚本成功/失败；goto=跳转；break=跳出循环）。⚠️ 值域与 onError 不交叉，script_fail 等只属 then，勿跨填 onError"},"timeout":{"type":"integer","description":"wait until 的轮询超时上限(ms)，任务描述明确要求超时(如最多等30秒)时传，否则省略用默认"},"pollInterval":{"type":"integer","description":"wait until 的轮询间隔(ms)，任务描述明确指定(如每500毫秒检查一次)才传，否则省略用默认500ms"},"ms":{"type":"number","description":"wait等待毫秒"},"code":{"type":"string","description":"evaluate的JS代码"},"property":{"type":"string","description":"extract提取的属性名"},"regex":{"type":"string","description":"extract正则"},"storeAs":{"description":"存储变量名。ai action 必须用 object 格式 {\"变量名\": \"描述\"}，其他 action 用字符串","oneOf":[{"type":"string"},{"type":"object","additionalProperties":{"type":"string"}}]},"onError":{"type":"string","enum":["stop","skip","ai-fallback-stop","ai-fallback-skip"],"description":"步骤失败策略 stop 停止(默认,向上传播致脚本失败)/skip 跳过/ai-fallback-stop AI兜底后停/ai-fallback-skip AI兜底后跳过。⚠️ script_fail 是 then 字段的值不要填此；wait 超时想让脚本失败用 stop"},"field":{"type":"string","description":"关联的字段名（ai/extract/check可用）"},"iframe":{"type":"array","items":{"type":"string"},"description":"iframe selector 链覆盖（根→叶）。常规留空让代码自动提取；仅在收到'iframe 脆弱/提取失败'warning 时基于元素属性生成更稳链覆盖"},"iframeRef":{"type":"string","description":"iframe 元素的 aria-ref（指向 <iframe> 元素本身）。iframe 脆弱/提取失败求助选(i)用 ref 指认 iframe 后，下轮传 iframeRef：代码用 aria-ref 定位 iframe DOM 提取链。仅对刚求助过的同 iframe 传"},"skipIfDataEmpty":{"type":"boolean","description":"fillData字段为空时跳过（null/空串/空数组→跳，0/false→不跳）"},"skipIfElementMissing":{"type":"boolean","description":"元素不存在时跳过"},"acceptFragile":{"type":"boolean","description":"priority 8 脆弱selector/iframe求助后用户选(f)使用脆弱的，下轮operate/save_step传true+同selector/iframe：代码跳过脆弱检测(仍查唯一性/存在性)、落盘+自动onError=ai-fallback-stop。仅对刚求助过的同selector/iframe传；换selector/iframe必须不传(重置)"},"acceptAsIs":{"type":"boolean","description":"selector/iframe 找不到(count==0)求助选(h)用当前值后，下轮save_step传true+同selector/iframe：代码跳过存在性校验直接落盘+onError=ai-fallback-stop。仅对刚求助过的同值传；换值必须不传(重置)。多匹配(count>1)不适用"},"captchaType":{"type":"string","enum":["text","slide","pixel","click"],"description":"验证码类型"},"imageSelector":{"type":"string","description":"验证码图片选择器（text/click）"},"inputSelector":{"type":"string","description":"输入框选择器（text）"},"sliderSelector":{"type":"string","description":"滑块按钮选择器（slide/pixel）"},"targetSelector":{"type":"string","description":"滑块小图/提示文字选择器（slide/pixel/click）"},"backgroundSelector":{"type":"string","description":"背景大图选择器（slide/pixel）"},"message":{"type":"string","description":"check失败消息（phase_fail/script_fail）"},"until":{"type":"object","description":"wait条件等待的detect条件JSON。selector 类等待优先用 ref 指认元素（代码自动提取 selector）；等页面状态用 page_contains/url_changed；等 iframe/页面加载完成（readyState=complete）用 document_ready（until.iframe 可省略=继承默认 frame/主页面；[]=主页面 / [selector链]=指定 iframe）"},"extractType":{"type":"string","enum":["url","title","property"],"description":"extract 提取类型 url(当前URL)/title(页面标题)/property(元素属性,默认)"},"cleanupSteps":{"type":"array","description":"check失败时的清理步骤数组（phase_fail/script_fail时）"},"phase":{"type":"string","description":"当前 phase 名称。首次传入时自动创建新 phase"},"phaseType":{"type":"string","enum":["sequential","loop","ai"],"description":"phase 类型 sequential(顺序)/loop(循环)/ai(AI自主)，仅首次传入 phase 时需要"},"phaseLoopSource":{"type":"string","description":"loop phase 的循环数据源字段名"},"parentPhase":{"type":"string","description":"嵌套 phase 的父 phase 名称（顶层 phase 不传）"},"maxAiTurns":{"type":"integer","description":"ai action 的 AI 最大轮次"},"condition":{"type":"object","description":"步骤执行前条件检测（detect 对象，必填 type，字段见 check detect 类型表，不满足则跳过本步骤）"},"preSetup":{"type":"object","description":"执行前设置：{dialogHandler:auto_accept或auto_dismiss, dialogText?:prompt输入}"},"retry":{"type":"object","description":"重试配置：{count:次数, interval?:间隔ms}"},"fallback":{"type":"object","description":"备选方案（selector 失败时，缺省继承 step 的 action/field/iframe/timeout）","properties":{"ref":{"type":"string","description":"录制期元素 ref（aria-ref），代码提取为 selector；最终脚本不含"},"selector":{"type":"string"},"action":{"type":"string"},"value":{"type":"string"},"code":{"type":"string"},"iframe":{"type":"array","items":{"type":"string"}},"iframeRef":{"type":"string","description":"iframe 元素 ref（aria-ref），代码提取为 iframe 链；最终脚本不含"},"timeout":{"type":"integer"}}},"args":{"type":"array","description":"evaluate 的 JS 参数列表"},"folder":{"type":"string","description":"screenshot 保存文件夹（覆盖配置，不传则自动生成）"},"filename":{"type":"string","description":"screenshot 文件名（不含扩展名，不传则自动生成）"},"phaseCondition":{"type":"object","description":"phase 执行前条件检测（仅首次传入 phase 名时生效）"},"phaseLoopCondition":{"type":"object","description":"loop phase 每轮继续条件（仅首次传入 phase 名时生效）"},"phaseOnError":{"type":"string","enum":["stop","skip","ai-fallback-stop","ai-fallback-skip"],"description":"phase 错误策略 stop/skip/ai-fallback-stop/ai-fallback-skip（仅首次传入 phase 名时生效）"},"phaseMaxLoopCount":{"type":"integer","description":"loop phase 最大循环次数（仅首次传入 phase 名时生效）"},"phaseRowIndexOffset":{"type":"integer","description":"loop phase 行索引偏移量（仅首次传入 phase 名时生效）"},"phaseMaxAiTurns":{"type":"integer","description":"ai phase AI 总轮次预算（仅首次传入 phase 名时生效）"},"phaseTimeout":{"type":"integer","description":"phase 超时(ms)（仅首次传入 phase 名时生效）"},"phaseAiGoal":{"type":"string","description":"phase 业务目标（R3-2 必填，首次创建 phase 时传入简短目标，用于 AI fallback/ai phase）"}},"required":["stepType","description","name"]}""")),
+                BinaryData.FromString("""{"type":"object","properties":{"stepType":{"type":"string","enum":["check","captcha","evaluate","extract","wait","ai","goto","handleDialog","screenshot"],"description":"非交互步骤类型 check验证/captcha验证码/evaluate执行JS/extract提取/wait等待/aiAI步骤/goto跳转/handleDialog对话框/screenshot截图"},"description":{"type":"string"},"name":{"type":"string","description":"步骤名（必传）：基于 action+对象起简短英文名如 fillUsername/clickLogin/navigateLogin/waitLoginLoad/checkDesktop，同 phase 内唯一，goto toStep 目标"},"ref":{"type":"string","description":"快照中的元素引用编号（如 e27）。selector 类 detect/check 优先用 ref 让代码提取稳定 selector（与 operate 同源）"},"selector":{"type":"string","description":"XPath 选择器"},"value":{"type":"string"},"toPhase":{"type":"string","description":"goto目标phase名"},"toStep":{"type":"string","description":"goto目标step名"},"accept":{"type":"boolean","description":"handleDialog是否接受"},"dialogPromptText":{"type":"string","description":"prompt对话框输入文本"},"screenshotType":{"type":"string","enum":["viewport","fullPage","element"],"description":"截图类型：viewport(可见区域，默认)/fullPage(整页)/element(元素截图)"},"saveToFile":{"type":"boolean","description":"是否保存文件到磁盘，默认true"},"storeContent":{"type":"string","enum":["path","dataUrl","both"],"description":"storeAs存什么：path(文件路径，默认)/dataUrl(图片数据)/both(两者)。saveToFile=false时只能为dataUrl"},"detect":{"type":"object","description":"check的detect条件。selector 类检测优先用 ref 指认元素（代码自动提取 selector），等页面状态用 page_contains/url_changed"},"then":{"type":"string","enum":["nothing","continue","step_error","phase_success","phase_error","phase_rerun","row_rerun","script_success","script_fail","goto","break"],"description":"check的then值（nothing=通过；continue=下一行/loop下一迭代；step_error=按本step onError处理；phase_success/phase_error=phase成功/触发phase onError；phase_rerun/row_rerun=重跑整个phase/当前行；script_success/script_fail=脚本成功/失败；goto=跳转；break=跳出循环）。⚠️ 值域与 onError 不交叉，script_fail 等只属 then，勿跨填 onError"},"timeout":{"type":"integer","description":"wait until 的轮询超时上限(ms)，任务描述明确要求超时(如最多等30秒)时传，否则省略用默认"},"pollInterval":{"type":"integer","description":"wait until 的轮询间隔(ms)，任务描述明确指定(如每500毫秒检查一次)才传，否则省略用默认500ms"},"ms":{"type":"number","description":"wait等待毫秒"},"code":{"type":"string","description":"evaluate的JS代码"},"property":{"type":"string","description":"extract提取的属性名"},"regex":{"type":"string","description":"extract正则"},"storeAs":{"description":"存储变量名。ai action 必须用 object 格式 {\"变量名\": \"描述\"}，其他 action 用字符串","oneOf":[{"type":"string"},{"type":"object","additionalProperties":{"type":"string"}}]},"bizValues":{"type":"array","description":"dreamy 业务值参数化（属性锚点/拼接/全字段搜替换）：传 [{value,field}]，value=实际业务值（页面真实值），field=已注册字段名（本步 field 或前步已注册）。代码在 selector/value/url/key/code 等字段搜替换 value 片段为 {{field}}（保留前缀如 dc_021→dc_{{companyCode}}）。用于属性锚点 @id='dc_021'/拼接 dc_021/iframe 链含业务值。save_step（check/captcha/evaluate/extract/wait）selector 含属性锚点/拼接时传。文本锚点 normalize-space/contains 用 field 非 bizValues。fill/type/select 在 operate 工具不在 save_step。field 未注册会被拒","items":{"type":"object","properties":{"value":{"type":"string"},"field":{"type":"string"}},"required":["value","field"]}},"onError":{"type":"string","enum":["stop","skip","ai-fallback-stop","ai-fallback-skip"],"description":"步骤失败策略 stop 停止(默认,向上传播致脚本失败)/skip 跳过/ai-fallback-stop AI兜底后停/ai-fallback-skip AI兜底后跳过。⚠️ script_fail 是 then 字段的值不要填此；wait 超时想让脚本失败用 stop"},"field":{"type":"string","description":"关联的字段名（ai/extract/check可用）"},"iframe":{"type":"array","items":{"type":"string"},"description":"iframe selector 链覆盖（根→叶）。常规留空让代码自动提取；仅在收到'iframe 脆弱/提取失败'warning 时基于元素属性生成更稳链覆盖"},"iframeRef":{"type":"string","description":"iframe 元素的 aria-ref（指向 <iframe> 元素本身）。iframe 脆弱/提取失败求助选(i)用 ref 指认 iframe 后，下轮传 iframeRef：代码用 aria-ref 定位 iframe DOM 提取链。仅对刚求助过的同 iframe 传"},"skipIfDataEmpty":{"type":"boolean","description":"fillData字段为空时跳过（null/空串/空数组→跳，0/false→不跳）"},"skipIfElementMissing":{"type":"boolean","description":"元素不存在时跳过"},"acceptFragile":{"type":"boolean","description":"priority 8 脆弱selector/iframe求助后用户选(f)使用脆弱的，下轮operate/save_step传true+同selector/iframe：代码跳过脆弱检测(仍查唯一性/存在性)、落盘+自动onError=ai-fallback-stop。仅对刚求助过的同selector/iframe传；换selector/iframe必须不传(重置)"},"acceptAsIs":{"type":"boolean","description":"selector/iframe 找不到(count==0)求助选(h)用当前值后，下轮save_step传true+同selector/iframe：代码跳过存在性校验直接落盘+onError=ai-fallback-stop。仅对刚求助过的同值传；换值必须不传(重置)。多匹配(count>1)不适用"},"captchaType":{"type":"string","enum":["text","slide","pixel","click"],"description":"验证码类型"},"imageSelector":{"type":"string","description":"验证码图片选择器（text/click）"},"inputSelector":{"type":"string","description":"输入框选择器（text）"},"sliderSelector":{"type":"string","description":"滑块按钮选择器（slide/pixel）"},"targetSelector":{"type":"string","description":"滑块小图/提示文字选择器（slide/pixel/click）"},"backgroundSelector":{"type":"string","description":"背景大图选择器（slide/pixel）"},"message":{"type":"string","description":"check失败消息（phase_fail/script_fail）"},"until":{"type":"object","description":"wait条件等待的detect条件JSON。selector 类等待优先用 ref 指认元素（代码自动提取 selector）；等页面状态用 page_contains/url_changed；等 iframe/页面加载完成（readyState=complete）用 document_ready（until.iframe 可省略=继承默认 frame/主页面；[]=主页面 / [selector链]=指定 iframe）"},"extractType":{"type":"string","enum":["url","title","property"],"description":"extract 提取类型 url(当前URL)/title(页面标题)/property(元素属性,默认)"},"cleanupSteps":{"type":"array","description":"check失败时的清理步骤数组（phase_fail/script_fail时）"},"phase":{"type":"string","description":"当前 phase 名称。首次传入时自动创建新 phase"},"phaseType":{"type":"string","enum":["sequential","loop","ai"],"description":"phase 类型 sequential(顺序)/loop(循环)/ai(AI自主)，仅首次传入 phase 时需要"},"phaseLoopSource":{"type":"string","description":"loop phase 的循环数据源字段名。若该字段未注册，传 phaseFieldType（table/items/file）+ phaseFieldLabel 让代码自动注册；已注册则代码直接用（传了 phaseFieldType/phaseFieldLabel/phaseFieldItems 会被忽略）"},"phaseFieldType":{"type":"string","enum":["table","items","file"],"description":"loopSource 未注册时自动注册的字段类型：table=明细表（多列，循环内 operate 增量注册子列，配 phaseFieldLabel）；items=简单值列表（需配 phaseFieldItems）；file=纯附件上传。不传则问用户 a/b/c 兜底 table"},"phaseFieldLabel":{"type":"string","description":"loopSource 字段的 label（未注册时自动注册用，缺省用 loopSource 名）"},"phaseFieldItems":{"type":"object","description":"loopSource 未注册且 phaseFieldType=items 时配的简单数组元素类型（结构同 fieldItems）；table/file 传了忽略","properties":{"type":{"type":"string","description":"元素类型：string/number/date/boolean"},"format":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"min":{"type":"number"},"max":{"type":"number"}}},"parentPhase":{"type":"string","description":"嵌套 phase 的父 phase 名称（顶层 phase 不传）"},"maxAiTurns":{"type":"integer","description":"ai action 的 AI 最大轮次"},"condition":{"type":"object","description":"步骤执行前条件检测（detect 对象，必填 type，字段见 check detect 类型表，不满足则跳过本步骤）"},"preSetup":{"type":"object","description":"执行前设置：{dialogHandler:auto_accept或auto_dismiss, dialogText?:prompt输入}"},"retry":{"type":"object","description":"重试配置：{count:次数, interval?:间隔ms}"},"fallback":{"type":"object","description":"备选方案（selector 失败时，缺省继承 step 的 action/field/iframe/timeout）","properties":{"ref":{"type":"string","description":"录制期元素 ref（aria-ref），代码提取为 selector；最终脚本不含"},"selector":{"type":"string"},"action":{"type":"string"},"value":{"type":"string"},"code":{"type":"string"},"iframe":{"type":"array","items":{"type":"string"}},"iframeRef":{"type":"string","description":"iframe 元素 ref（aria-ref），代码提取为 iframe 链；最终脚本不含"},"timeout":{"type":"integer"}}},"args":{"type":"array","description":"evaluate 的 JS 参数列表"},"folder":{"type":"string","description":"screenshot 保存文件夹（覆盖配置，不传则自动生成）"},"filename":{"type":"string","description":"screenshot 文件名（不含扩展名，不传则自动生成）"},"phaseCondition":{"type":"object","description":"phase 执行前条件检测（仅首次传入 phase 名时生效）"},"phaseLoopCondition":{"type":"object","description":"loop phase 每轮继续条件（仅首次传入 phase 名时生效）"},"phaseOnError":{"type":"string","enum":["stop","skip","ai-fallback-stop","ai-fallback-skip"],"description":"phase 错误策略 stop/skip/ai-fallback-stop/ai-fallback-skip（仅首次传入 phase 名时生效）"},"phaseMaxLoopCount":{"type":"integer","description":"loop phase 最大循环次数（仅首次传入 phase 名时生效）"},"phaseRowIndexOffset":{"type":"integer","description":"loop phase 行索引偏移量（仅首次传入 phase 名时生效）"},"phaseMaxAiTurns":{"type":"integer","description":"ai phase AI 总轮次预算（仅首次传入 phase 名时生效）"},"phaseTimeout":{"type":"integer","description":"phase 超时(ms)（仅首次传入 phase 名时生效）"},"phaseAiGoal":{"type":"string","description":"phase 业务目标（R3-2 必填，首次创建 phase 时传入简短目标，用于 AI fallback/ai phase）"}},"required":["stepType","description","name"]}""")),
             ChatTool.CreateFunctionTool("screenshot", "截图查看页面内容",
                 BinaryData.FromString("""{"type":"object","properties":{"selector":{"type":"string"},"quality":{"type":"integer","description":"JPEG质量0-100，默认70。验证码识别时用100"}},"required":[]}""")),
             ChatTool.CreateFunctionTool("get_snapshot", "获取页面 Accessibility Tree 快照",
@@ -491,10 +502,10 @@ public class RecordingEngine
             Description = description,
             Field = args.GetValueOrDefault("fieldName")?.ToString(),  // A1: fieldName → step.Field
             // 批次7-A2：upload 时 FilePath 存占位符（废弃 N3 的 FilePath=value 映射；回放 StepExecutor 读 FilePath 解析 fillData 动态附件）。
-            // 批次7-loop 修复（核查第9轮🟠1）：loopSource=attachments（loop 真迭代）存 {{path}}——回放每行 rowData={name,url,path}，{{path}} 取当前行单附件 path；
+            // 批次7-loop 修复（核查第9轮🟠1；改动11 {{path}}→{{_path}}）：loopSource=attachments（loop 真迭代）存 {{_path}}——回放每行 rowData={name,url,path}，{{_path}}（ReplaceVars/ResolveRawValue 特判映射 path）取当前行单附件 path；
             //   原 {{fieldName}} 在 rowData 无键→落根作用域取完整数组→每轮传全部 N 文件（bug）。非 loop 单步存 {{fieldName}}（fillData[fieldName] 对象数组一次 SetInputFiles 全部）。
             FilePath = action == "upload"
-                ? (CurrentPhase.LoopSource == "attachments" ? "{{path}}" : $"{{{{{args.GetValueOrDefault("fieldName")?.ToString() ?? ""}}}}}")
+                ? (FindField(_script.Fields, CurrentPhase.LoopSource ?? "")?.Type == "file" ? "{{_path}}" : $"{{{{{args.GetValueOrDefault("fieldName")?.ToString() ?? ""}}}}}")
                 : null,
             // S4 改动3：补读 step 修饰符 + action 专属字段（补 Schema 让 AI 能传 + 补读取让存，缺一不可；I.2 半截修复）。
             // maxAiTurns 不在此读——forceAiAction=true 时由 RecordingActionExecutor 的 ai step 分支独立从 args 读取。
@@ -603,7 +614,7 @@ public class RecordingEngine
 
         // E-2（方向E username 误伤修复，2026-07-15）：execute 前快照 CurrentSteps.Count，注册块入口据此守卫--操作失败(Success=false)或 execute 内不 Add step(priority9/multimatch/priority8未接受) 时跳过字段注册，消除"失败留脏字段->重试触发 R7 重名误伤"。
         var stepsBefore = CurrentSteps.Count;
-        var result = await _actionExecutor.ExecuteOperateAsync(_page, step, _script, CurrentSteps, args, ct, CurrentPhase.LoopSource, acceptFragile: acceptFragile, isAcceptedAsIs: (t, v) => IsAsIsAccepted(t, v), isFragileAccepted: (t, v) => IsFragileAccepted(t, v));  // 批次7-loop：传当前 phase loopSource + 2c acceptFragile + ND7 acceptAsIs 回调 + 待决策1 acceptFragile 回调（阶段0 iframe 脆弱链集合命中 falls-through）
+        var result = await _actionExecutor.ExecuteOperateAsync(_page!, step, _script, CurrentSteps, args, ct, CurrentPhase.LoopSource, acceptFragile: acceptFragile, isAcceptedAsIs: (t, v) => IsAsIsAccepted(t, v), isFragileAccepted: (t, v) => IsFragileAccepted(t, v), recordVarValues: _recordVarValues, bizValues: GetObject<List<BizValue>>(args, "bizValues"));  // 批次7-loop + dreamy F3/D-3：传 loopSource + acceptFragile + ND7 acceptAsIs + acceptFragile 回调 + recordVarValues 缓存引用 + bizValues（从 args 解析，E7 阶段6 搜替换）
         // 形态 A：删 updatedScript 回写（无 iframeConfig 注册表，ExtractFrameChainAsync 纯函数当场算当场用）。
         // 缺陷3：无论 operate 成败，有反推 iframeChain 就更新 _lastIframeChain（供 get_snapshot 聚焦当前 iframe 上下文，9.2）。
         if (result.IframeChain is { Length: > 0 })
@@ -626,7 +637,7 @@ public class RecordingEngine
         if (result.Success && CurrentSteps.Count > stepsBefore && fieldName != null && fieldLabel != null)
         {
             // ④-8 🔴-3 录制层：字段名撞系统保留字直接 fail-fast（保留字无协商，区别于字段重名/撞 storeAs 走 RequestHelp）。
-            // 字段名进 fillData（scopeChain 末层）会永久遮蔽系统变量（rowIndex/_lastUrl/_lastRowCount/lastError），静默取错值。
+            // 字段名进 fillData（scopeChain 末层）会永久遮蔽系统变量（_rowIndex/_lastError/_lastUrl/_rowItem/_path/_name/_url/_lastDialogMessage/_lastAiFallbackError），静默取错值。_lastRowCountStack 已移出 vars（改动13）不在此清单。
             if (SmartFilling.Engine.Engine.ScriptLoader.ReservedVarNames.Contains(fieldName))
                 return $"❌ 字段名 '{fieldName}' 与系统保留变量冲突（{string.Join("/", SmartFilling.Engine.Engine.ScriptLoader.ReservedVarNames)}），请换字段名";
 
@@ -650,41 +661,51 @@ public class RecordingEngine
             if (FieldExists(_script.Fields, fieldName))
             {
                 var existingField = FindField(_script.Fields, fieldName);
-                var reply = await ExecuteRequestHelpAsync(new()
+                // 改动6 P13（2026-07-23）：真正的 loopSource 字段（某 phase 的 LoopSource）再次 operate 自动复用 register=false，不问 a/b/c；
+                // 普通 array/file 字段（非任何 phase 的 loopSource）+ string/number/date/boolean 字段仍问 a/b/c（保留覆盖/换名选项，不误伤）。
+                // 精确判断遍历 _phases（照 FindPhase 递归查 p.LoopSource==name），替代原 type=array/file 近似（误伤普通 array/file 剥夺覆盖/换名选项）。
+                if (existingField?.Type is "array" or "file" && IsLoopSourceField(_phases, fieldName))
                 {
-                    ["question"] = "字段「" + fieldName + "」已存在（标签：" + existingField?.Label + "，类型：" + existingField?.Type + "）。这属于哪种情况？请回复 a / b / c：\n" +
-                                   "(a) 同一字段，复用已有定义\n" +
-                                   "(b) 不同字段——回复新字段名重试；只回 b 则由我起名\n" +
-                                   "(c) 覆盖——用本次提取的定义替换已有定义"
-                }, ct);
-
-                // 用户取消（录制被取消）→ 原样返回
-                if (reply.Contains("取消")) return reply;
-
-                // 解析用户选择；兜底默认 (a) 复用（安全，不破坏已有定义）
-                const string prefix = "用户回答:";
-                var answerText = reply.StartsWith(prefix) ? reply[prefix.Length..].Trim() : reply;
-                bool reuse = answerText.Equals("a", StringComparison.OrdinalIgnoreCase) || answerText.Equals("1")
-                    || answerText.Contains("复用") || answerText.Contains("继续") || answerText.Contains("原") || answerText.Contains("同一")
-                    || string.IsNullOrWhiteSpace(answerText);  // 兜底默认 a 复用
-                bool over = answerText.Equals("c", StringComparison.OrdinalIgnoreCase) || answerText.Equals("3")
-                    || answerText.Contains("覆盖") || answerText.Contains("替换") || answerText.Contains("重写");
-
-                // 先判 over（覆盖/替换/重写是明确破坏性意图，优先识别），再判 reuse——
-                // 避免「覆盖原有的」「替换原来的」等含「原」字的覆盖措辞，被 reuse 的「原」关键词误判为复用（审查发现 1）
-                if (over)
-                {
-                    overwrite = true;  // (c) 覆盖：进入注册分支但替换已有定义
-                }
-                else if (reuse)
-                {
-                    register = false;  // (a) 复用：不注册，step.Field 已引用原 fieldName
+                    register = false;  // loopSource 字段已由 phase 定义，operate 不改它，自动复用（step.Field 引用原 fieldName）
                 }
                 else
                 {
-                    // (b) 换名（a-cached-hopper）：不解析用户原话（自然语言措辞多样：「选 b」「用 billNo」「新名字用billNo,选b」等，
-                    // 位置式正则无法可靠枚举）。透传原话给 AI，用两条规则教 AI 判断新字段名（AI 读 renameHint 后据规则分类）。
-                    renameHint = BuildRenameHint(fieldName, answerText);
+                    var reply = await ExecuteRequestHelpAsync(new()
+                    {
+                        ["question"] = "字段「" + fieldName + "」已存在（标签：" + existingField?.Label + "，类型：" + existingField?.Type + "）。这属于哪种情况？请回复 a / b / c：\n" +
+                                       "(a) 同一字段，复用已有定义\n" +
+                                       "(b) 不同字段——回复新字段名重试；只回 b 则由我起名\n" +
+                                       "(c) 覆盖——用本次提取的定义替换已有定义"
+                    }, ct);
+
+                    // 用户取消（录制被取消）→ 原样返回
+                    if (reply.Contains("取消")) return reply;
+
+                    // 解析用户选择；兜底默认 (a) 复用（安全，不破坏已有定义）
+                    const string prefix = "用户回答:";
+                    var answerText = reply.StartsWith(prefix) ? reply[prefix.Length..].Trim() : reply;
+                    bool reuse = answerText.Equals("a", StringComparison.OrdinalIgnoreCase) || answerText.Equals("1")
+                        || answerText.Contains("复用") || answerText.Contains("继续") || answerText.Contains("原") || answerText.Contains("同一")
+                        || string.IsNullOrWhiteSpace(answerText);  // 兜底默认 a 复用
+                    bool over = answerText.Equals("c", StringComparison.OrdinalIgnoreCase) || answerText.Equals("3")
+                        || answerText.Contains("覆盖") || answerText.Contains("替换") || answerText.Contains("重写");
+
+                    // 先判 over（覆盖/替换/重写是明确破坏性意图，优先识别），再判 reuse——
+                    // 避免「覆盖原有的」「替换原来的」等含「原」字的覆盖措辞，被 reuse 的「原」关键词误判为复用（审查发现 1）
+                    if (over)
+                    {
+                        overwrite = true;  // (c) 覆盖：进入注册分支但替换已有定义
+                    }
+                    else if (reuse)
+                    {
+                        register = false;  // (a) 复用：不注册，step.Field 已引用原 fieldName
+                    }
+                    else
+                    {
+                        // (b) 换名（a-cached-hopper）：不解析用户原话（自然语言措辞多样：「选 b」「用 billNo」「新名字用billNo,选b」等，
+                        // 位置式正则无法可靠枚举）。透传原话给 AI，用两条规则教 AI 判断新字段名（AI 读 renameHint 后据规则分类）。
+                        renameHint = BuildRenameHint(fieldName, answerText);
+                    }
                 }
             }
 
@@ -727,50 +748,28 @@ public class RecordingEngine
                 }
                 if (GetBool(args, "fieldMultiple") == true) fieldDef = fieldDef with { Multiple = true };  // #40：原 is bool 对 JsonElement 恒 false
 
-                // AI 传入嵌套子字段（table 类型手动预定义所有子列）
+                // AI 传入嵌套子字段（table 类型手动预定义所有子列）--复用 ParseSubFields helper（与 ensure_phase 自动注册同源，保证两端子列结构一致）
                 if (args.TryGetValue("fieldFields", out var ff) && ff is JsonElement ffEl && ffEl.ValueKind == JsonValueKind.Array)
                 {
+                    var parsed = ParseSubFields(ffEl);
                     var existingSubFields = fieldDef.Fields ?? [];
-                    foreach (var item in ffEl.EnumerateArray())
+                    foreach (var sf in parsed)
                     {
-                        var sf = new FieldDefinition();
-                        if (item.TryGetProperty("name", out var fn)) sf = sf with { Name = fn.GetString() ?? "" };
-                        if (item.TryGetProperty("label", out var fl)) sf = sf with { Label = fl.GetString() ?? "" };
-                        if (item.TryGetProperty("type", out var ft)) sf = sf with { Type = ft.GetString() ?? "string" };
-                        if (item.TryGetProperty("uiComponent", out var fu)) sf = sf with { UiComponent = fu.GetString() };
-                        if (item.TryGetProperty("required", out var fr) && fr.ValueKind == JsonValueKind.True) sf = sf with { Required = true };
-                        if (item.TryGetProperty("source", out var fs)) sf = sf with { Source = fs.GetString() };
-                        if (item.TryGetProperty("description", out var fd)) sf = sf with { Description = fd.GetString() };
-                        if (item.TryGetProperty("format", out var ffmt)) sf = sf with { Format = ffmt.GetString() };
-                        if (item.TryGetProperty("options", out var fopt) && fopt.ValueKind == JsonValueKind.Array)
-                            sf = sf with { Options = fopt.EnumerateArray().Select(e => e.GetString() ?? "").ToList() };
-                        if (item.TryGetProperty("placeholder", out var fph)) sf = sf with { Placeholder = fph.GetString() };
-                        if (item.TryGetProperty("pattern", out var fpt)) sf = sf with { Pattern = fpt.GetString() };
-                        if (sf.Name != "")
-                        {
-                            // 合并：已存在则覆盖（AI 提供的更完整），不存在则追加
-                            var existIdx = existingSubFields.FindIndex(f => f.Name == sf.Name);
-                            if (existIdx >= 0)
-                                existingSubFields[existIdx] = sf;
-                            else
-                                existingSubFields.Add(sf);
-                        }
+                        // 合并：已存在则覆盖（AI 提供的更完整），不存在则追加（合并语义留 operate 块，helper 只解析返新列表）
+                        var existIdx = existingSubFields.FindIndex(f => f.Name == sf.Name);
+                        if (existIdx >= 0)
+                            existingSubFields[existIdx] = sf;
+                        else
+                            existingSubFields.Add(sf);
                     }
                     if (existingSubFields.Count > 0)
                         fieldDef = fieldDef with { Fields = existingSubFields };
                 }
 
-                // AI 传入简单数组元素类型（Items）— 仅顶层 array 字段
+                // AI 传入简单数组元素类型（Items）— 仅顶层 array 字段（复用 ParseFieldItems helper）
                 if (args.TryGetValue("fieldItems", out var fi) && fi is JsonElement fiEl && fiEl.ValueKind == JsonValueKind.Object)
                 {
-                    var items = new FieldItems();
-                    if (fiEl.TryGetProperty("type", out var it)) items = items with { Type = it.GetString() ?? "string" };
-                    if (fiEl.TryGetProperty("format", out var ifmt)) items = items with { Format = ifmt.GetString() };
-                    if (fiEl.TryGetProperty("options", out var iopt) && iopt.ValueKind == JsonValueKind.Array)
-                        items = items with { Options = iopt.EnumerateArray().Select(e => e.GetString() ?? "").ToList() };
-                    if (fiEl.TryGetProperty("min", out var imin)) items = items with { Min = imin.GetDouble() };
-                    if (fiEl.TryGetProperty("max", out var imax)) items = items with { Max = imax.GetDouble() };
-                    fieldDef = fieldDef with { Items = items };
+                    fieldDef = fieldDef with { Items = ParseFieldItems(fiEl) };
                 }
 
                 if (overwrite)
@@ -912,7 +911,7 @@ public class RecordingEngine
         await LogAsync($"录制步骤: [{action}] {description}");
 
         // 检测新标签页 → 自动插入 switchTab 步骤
-        var pages = _page.Context.Pages;
+        var pages = _page!.Context.Pages;
         if (pages.Count > _lastPageCount)
         {
             _lastPageCount = pages.Count;
@@ -1653,13 +1652,28 @@ public class RecordingEngine
         if (saveDetectIsFragileLayer && string.IsNullOrEmpty(step.OnError))
             step = step with { OnError = "ai-fallback-stop" };
 
+        // dreamy E6：save_step 调前 A + bizValues 搜替换（决策3：A + bizValues 都接入 save_step，对齐 operate）
+        // 顺序：bizValues 先（属性锚点/拼接/全字段，保前缀）→ A 后（文本锚点，per-anchor 守卫）
+        // 插入点：所有 !Contains("{{") 校验之后（iframe 反推 / captcha 校验）、_totalSteps++ 之前（R1-3/R4-3，确保校验失败不递增 _totalSteps）
+        // save_step 无 finalStep 覆盖（step 直接传 ExecuteSaveStep），整体 ParametrizeByBizValues(step) 搜替换全字段（含 Selector/Value/Iframe）正确（区别于 operate E7 需拆分三局部变量）
+        var ssFieldName = step.Field;
+        var ssBizValues = GetObject<List<BizValue>>(args, "bizValues");
+        var (ssAllBiz, ssBizWarnings, ssBizErr) = RecordingActionExecutor.BuildBizList(ssBizValues, ssFieldName, stepType, step, _script);
+        if (ssBizErr != null) return ssBizErr;  // E3 字段名校验失败
+        if (ssAllBiz.Count > 0)
+        {
+            step = RecordingActionExecutor.ParametrizeByBizValues(step, ssAllBiz);
+            foreach (var b in ssAllBiz) _recordVarValues[b.Field] = b.Value;  // F4 缓存填充
+        }
+        step = step with { Selector = RecordingActionExecutor.ParametrizeSelectorText(step.Selector, ssFieldName, _recordVarValues) };  // A 文本锚点（守卫 skip if {{}}）
+
         _totalSteps++;
         var result = _actionExecutor.ExecuteSaveStep(step, CurrentSteps);
 
         // DC12（a-a-4）：顶层 new_row_appears then:continue → 自动补反 check not(new_row_appears) then:step_error（挡 detect=false silent——加行没生效时 loop 继续 fill 错位 silent Completed）。
         // T8 选a：仅顶层（step.Detect?.Type，不递归嵌套 all/any/not 内的 new_row_appears——罕见，AI/用户手动补）。
         // 落点：ExecuteSaveStep 之后（main check 已入 CurrentSteps），保证顺序=[..., main check, 反 check]（回放 main 先 → 反 check 后；若误插前面则反 check 先执行加行未录即检查→必然 step_error）。
-        // Not 内层 Selector/Iframe 从 step.Detect 复制（DC11 同 selector + DC13 同源 _lastRowCount 基线 + S1 断言两端 iframe 一致），不再经 ProcessDetectNodeAsync（避免重复反推 + ②ref 提取阻断）。
+        // Not 内层 Selector/Iframe 从 step.Detect 复制（DC11 同 selector + DC13 同源 RowBaselineStack 基线 + S1 断言两端 iframe 一致），不再经 ProcessDetectNodeAsync（避免重复反推 + ②ref 提取阻断）。
         if (step.Action == "check" && step.Detect?.Type == "new_row_appears" && step.Then == "continue")
         {
             _totalSteps++;
@@ -1685,6 +1699,9 @@ public class RecordingEngine
         // phase 级 warnings（§3c phase.Condition/LoopCondition 反推告警）拼进 message，AI 下一轮可见（不阻断）；Distinct 去重
         if (phaseWarnings.Count > 0)
             result = result with { Message = result.Message + "\n" + string.Join("\n", phaseWarnings.Distinct()) };
+        // dreamy E2：bizValues 切分 warning 拼进 message（AI 下轮可见，不阻断落盘）
+        if (ssBizWarnings.Count > 0)
+            result = result with { Message = result.Message + "\n" + string.Join("\n", ssBizWarnings.Distinct()) };
 
         // save_step 成功/失败推送
         if (result.Success)
@@ -2325,7 +2342,7 @@ public class RecordingEngine
         var (screenshot, message) = await _actionExecutor.ExecuteScreenshotAsync(_page, selector, quality);
         var base64 = Convert.ToBase64String(screenshot);
         var mimeType = screenshot.Length > 1 && screenshot[0] == 0xFF ? "image/jpeg" : "image/png";
-        await OnScreenshot?.Invoke("", base64);
+        await (OnScreenshot?.Invoke("", base64) ?? Task.CompletedTask);
         // 截图通过 _messages 注入图片消息给 AI（使用 image_url 格式兼容 DashScope）
         _messages?.Add(new UserChatMessage(
             ChatMessageContentPart.CreateTextPart("[截图]"),
@@ -2535,17 +2552,95 @@ public class RecordingEngine
             return ("用户确认「" + phaseName + "」是新阶段（非原 phase 续录）。请用一个未被占用的 phase 名重新调用（可参考当前页面/iframe 特征起名，如「" + phaseName + "-2」或描述性名字）。", warnings);
         }
 
+        // === P4（2026-07-23）：parentPhase 读取 + 检查前移到 loopSource 自动注册之前 ===
+        // 父 phase 不存在时直接报错 return，不注册 loopSource（避免残留字段 + 重传"已注册忽略"致字段挂错位置 silent 回归）。
+        var parentPhase = args.GetValueOrDefault("parentPhase")?.ToString();
+        if (!string.IsNullOrEmpty(parentPhase) && FindPhase(_phases, parentPhase) == null)
+            return ($"❌ 父 phase '{parentPhase}' 不存在，请先创建父 phase", warnings);
+
         var phaseType = args.GetValueOrDefault("phaseType")?.ToString() ?? "sequential";
         var loopSource = args.GetValueOrDefault("phaseLoopSource")?.ToString();
-        // 修订4：loopSource 写裸字段名（不写 {{}}），且须是已注册的 type=array 字段（否则 GetLoopRows 静默返回空 → loop 0 迭代，明细行不填）
+        // 修订4：loopSource 写裸字段名（不写 {{}}）。
+        // P3（phaseFieldType 三选一，2026-07-23）：loopSource 未注册时 AI 传 phaseFieldType（table/items/file）+ phaseFieldLabel 让代码自动注册；
+        // 已注册则忽略 phaseFieldType/phaseFieldLabel/phaseFieldItems 用既有定义。替代方案B phaseFieldFields——AI 无 fillData 难一次性猜全子列，改 table bare array 循环内 operate 增量注册子列。
         if (!string.IsNullOrEmpty(loopSource))
         {
             if (loopSource.Contains("{{"))
                 return ("❌ phaseLoopSource 不能含 {{}}，写裸字段名（如 items，而非 {{items}}）", warnings);
+
+            // P1：IsRegisteredArrayField 已改为认 array||file（见 IsRegisteredArrayField 定义），file 类型已注册时走"已注册忽略"分支不重复 Add
             if (!IsRegisteredArrayField(_script.Fields, loopSource))
-                return ($"❌ phaseLoopSource '{loopSource}' 不是已注册的 type=array 字段（先注册该明细表字段，loopSource 写它的裸字段名）", warnings);
+            {
+                var phaseFieldType = args.GetValueOrDefault("phaseFieldType")?.ToString()?.ToLowerInvariant();
+
+                // P3 + P6：不传/无效 phaseFieldType -> 问用户 a/b/c，据回复注册，兜底 table
+                if (phaseFieldType is not ("table" or "items" or "file"))
+                {
+                    var ftReply = await ExecuteRequestHelpAsync(new()
+                    {
+                        ["question"] = $"phaseLoopSource '{loopSource}' 未注册且未传 phaseFieldType。该 loopSource 是哪种类型？请回复 a / b / c：\n" +
+                                       "(a) table 明细表（多列，循环内 operate 增量注册子列）\n" +
+                                       "(b) items 简单值列表（需配 phaseFieldItems）\n" +
+                                       "(c) file 纯附件上传"
+                    }, ct);
+                    // P6：取消处理（对齐 L2526 phase 重名 / 字段重名 问用户模式——ExecuteRequestHelpAsync 取消时返"等待用户回复时录制被取消"含"取消"）
+                    if (ftReply.Contains("取消")) return (ftReply, warnings);
+                    const string prefix = "用户回答:";
+                    var answerText = ftReply.StartsWith(prefix) ? ftReply[prefix.Length..].Trim() : ftReply;
+                    phaseFieldType = answerText switch
+                    {
+                        _ when answerText.Equals("a", StringComparison.OrdinalIgnoreCase) || answerText.Equals("1") || answerText.Contains("表") => "table",
+                        _ when answerText.Equals("b", StringComparison.OrdinalIgnoreCase) || answerText.Equals("2") || answerText.Contains("简单") || answerText.Contains("数组") => "items",
+                        _ when answerText.Equals("c", StringComparison.OrdinalIgnoreCase) || answerText.Equals("3") || answerText.Contains("附件") || answerText.Contains("文件") => "file",
+                        _ => "table"  // 兜底默认 table（最通用，子列可后续 operate 补）
+                    };
+                }
+
+                var fieldLabel = args.GetValueOrDefault("phaseFieldLabel")?.ToString() ?? loopSource;
+                FieldDefinition fieldDef;
+                if (phaseFieldType == "table")
+                {
+                    // table: bare array，子列循环内 operate 增量注册（Fields=[] 设计意图，空 loop 保存时 ValidateArrayFields 拒，prompt 教 AI 至少 operate 一个子列）
+                    fieldDef = new FieldDefinition
+                    {
+                        Name = loopSource, Label = fieldLabel, Type = "array",
+                        UiComponent = "table", Fields = []
+                    };
+                }
+                else if (phaseFieldType == "items")
+                {
+                    // items: 简单值列表，需 phaseFieldItems（缺则报错）；{{_rowItem}} 由 ScriptLoader CollectFieldDefinitions items 分支放行（改动10）
+                    if (!(args.TryGetValue("phaseFieldItems", out var pfi) && pfi is JsonElement ie && ie.ValueKind == JsonValueKind.Object))
+                        return ($"❌ phaseLoopSource '{loopSource}' phaseFieldType=items 需配 phaseFieldItems（元素类型定义，结构同 fieldItems）", warnings);
+                    fieldDef = new FieldDefinition
+                    {
+                        Name = loopSource, Label = fieldLabel, Type = "array",
+                        UiComponent = null, Fields = [], Items = ParseFieldItems(ie)
+                    };
+                }
+                else  // file
+                {
+                    // file: 纯附件上传，无子字段，{{_path}} 由 ScriptLoader CollectFieldDefinitions type=file 特判放行（改动11）
+                    fieldDef = new FieldDefinition
+                    {
+                        Name = loopSource, Label = fieldLabel, Type = "file",
+                        UiComponent = "upload", Multiple = true
+                    };
+                }
+
+                // P10：新 phase 未创建，用 parentPhase 算路径（显式信号，对齐求助/挂载；parentPhase 空=顶层 phase 挂顶层 _script.Fields）
+                var path = string.IsNullOrEmpty(parentPhase)
+                    ? new List<string>()
+                    : GetLoopFieldPathFor(parentPhase);
+                var targetFields = EnsureFieldPath(path);
+                targetFields.Add(fieldDef);
+                await LogAsync($"录制提示: phaseLoopSource '{loopSource}' 未注册，已据 phaseFieldType={phaseFieldType} 自动注册");
+            }
+            else if (args.TryGetValue("phaseFieldType", out _) || args.TryGetValue("phaseFieldLabel", out _) || args.TryGetValue("phaseFieldItems", out _))
+            {
+                await LogAsync($"录制提示: phaseLoopSource '{loopSource}' 已注册，忽略本次 phaseFieldType/phaseFieldLabel/phaseFieldItems（用既有定义）");
+            }
         }
-        var parentPhase = args.GetValueOrDefault("parentPhase")?.ToString();
 
         // §3c phase.Condition/LoopCondition 经 ProcessDetectNodeAsync 反推。D-I（a-a-4，2026-07-06 拍板）：lenient=false
         //（Condition/LoopCondition 都是前置判断——Condition 执行前一次、LoopCondition while 风格循环前含首次，须引用"执行前已存在的稳定元素"，录制期同时机可校验）。
@@ -2672,7 +2767,7 @@ public class RecordingEngine
             if (parent != null)
                 parent.Steps!.Add(newPhase);
             else
-                _phases.Add(newPhase); // 找不到父 phase，降级为顶层
+                return ($"❌ 父 phase '{parentPhase}' 不存在，请先创建父 phase", warnings);  // P4 前移后正常不触发，防御兜底（原降级 Add 顶层致字段挂错位置 silent）
         }
         else
         {
@@ -2713,6 +2808,15 @@ public class RecordingEngine
     {
         var path = new List<string>();
         WalkForPath(_phases, _currentPhaseName, path);
+        return path;
+    }
+
+    /// <summary>P10（2026-07-23）：按显式 parentPhase 算 loopSource 注册路径（替代无参 GetLoopFieldPath 用 _currentPhaseName 旧值——新 phase 未创建时 _currentPhaseName 仍是上个 phase，致跨 phase 加子字段挂错位置 silent）。
+    /// parentPhase 空=顶层 phase（返空路径挂顶层 _script.Fields）；非空=WalkForPath 找父 phase 的 loopSource 链。复用 WalkForPath。无参 GetLoopFieldPath（step 字段注册用，step 所在 phase 已建，_currentPhaseName 正确）不改。</summary>
+    private List<string> GetLoopFieldPathFor(string targetPhase)
+    {
+        var path = new List<string>();
+        WalkForPath(_phases, targetPhase, path);
         return path;
     }
 
@@ -2789,13 +2893,31 @@ public class RecordingEngine
         return false;
     }
 
-    /// <summary>修订4：递归查找已注册的 type=array 字段（loopSource 须指向明细表字段）。</summary>
+    /// <summary>修订4：递归查找已注册的 type=array 字段（loopSource 须指向明细表字段）。
+    /// P1（2026-07-23）：file 类型也认（phaseFieldType=file 注册 type=file，IsRegisteredArrayField 须认 array||file，否则 file loopSource 已注册后 ensure_phase 重复 Add silent）。</summary>
     private static bool IsRegisteredArrayField(List<FieldDefinition> fields, string name)
     {
         foreach (var f in fields)
         {
-            if (f.Name == name && f.Type == "array") return true;
+            if (f.Name == name && (f.Type == "array" || f.Type == "file")) return true;
             if (f.Fields is { Count: > 0 } && IsRegisteredArrayField(f.Fields, name)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>改动6 P13（2026-07-23）：精确判断 fieldName 是不是某 phase 的 LoopSource（遍历 phase 树含嵌套）。
+    /// 用于 operate FieldExists 块——loopSource 字段再次 operate 自动复用 register=false，普通 array/file 字段（非 loopSource）仍问 a/b/c 不误伤。
+    /// 替代原 type=array/file 近似（误伤普通 array/file 剥夺覆盖/换名选项）。照 FindPhase 递归模式。</summary>
+    internal static bool IsLoopSourceField(List<PhaseNode> phases, string name)  // T10 直测（提 internal，照 ParseSubFields 模式）；private→internal 供测试验 loopSource 精确判断
+    {
+        foreach (var p in phases)
+        {
+            if (p.LoopSource == name) return true;
+            if (p.Steps != null)
+            {
+                foreach (var child in p.Steps.OfType<PhaseNode>())
+                    if (IsLoopSourceField([child], name)) return true;
+            }
         }
         return false;
     }
@@ -2818,6 +2940,51 @@ public class RecordingEngine
                 return $"❌ storeAs 变量名 '{n}' 与字段名同名——运行时 fillData 会永久遮蔽该 storeAs，静默取错值。请换名（或字段名）";
         }
         return null;
+    }
+
+    /// <summary>
+    /// 解析 fieldFields/phaseFieldFields 数组（table 类型子列定义）为 FieldDefinition 列表。
+    /// 职责边界：只遍历数组 + 解析每个元素为 FieldDefinition 返新列表，**不含「已存在覆盖/不存在追加」合并**
+    /// （合并是 operate 针对「同名字段已注册」的语义，留 operate 块内；ensure_phase 自动注册是新建无 existingSubFields，直接用本结果）。
+    /// operate 与 ensure_phase 复用同一 helper 保证两端子列结构一致。
+    /// </summary>
+    internal static List<FieldDefinition> ParseSubFields(JsonElement arrayEl)  // 测试7/8 直调验证子列解析一致性 + 全字段回归
+    {
+        var list = new List<FieldDefinition>();
+        foreach (var item in arrayEl.EnumerateArray())
+        {
+            var sf = new FieldDefinition();
+            if (item.TryGetProperty("name", out var fn)) sf = sf with { Name = fn.GetString() ?? "" };
+            if (item.TryGetProperty("label", out var fl)) sf = sf with { Label = fl.GetString() ?? "" };
+            if (item.TryGetProperty("type", out var ft)) sf = sf with { Type = ft.GetString() ?? "string" };
+            if (item.TryGetProperty("uiComponent", out var fu)) sf = sf with { UiComponent = fu.GetString() };
+            if (item.TryGetProperty("required", out var fr) && fr.ValueKind == JsonValueKind.True) sf = sf with { Required = true };
+            if (item.TryGetProperty("source", out var fs)) sf = sf with { Source = fs.GetString() };
+            if (item.TryGetProperty("description", out var fd)) sf = sf with { Description = fd.GetString() };
+            if (item.TryGetProperty("format", out var ffmt)) sf = sf with { Format = ffmt.GetString() };
+            if (item.TryGetProperty("options", out var fopt) && fopt.ValueKind == JsonValueKind.Array)
+                sf = sf with { Options = fopt.EnumerateArray().Select(e => e.GetString() ?? "").ToList() };
+            if (item.TryGetProperty("placeholder", out var fph)) sf = sf with { Placeholder = fph.GetString() };
+            if (item.TryGetProperty("pattern", out var fpt)) sf = sf with { Pattern = fpt.GetString() };
+            if (sf.Name != "") list.Add(sf);
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// 解析 fieldItems/phaseFieldItems 对象（简单数组元素类型）为 FieldItems。
+    /// 职责边界：只解析对象返 FieldItems。
+    /// </summary>
+    private static FieldItems ParseFieldItems(JsonElement objEl)
+    {
+        var items = new FieldItems();
+        if (objEl.TryGetProperty("type", out var it)) items = items with { Type = it.GetString() ?? "string" };
+        if (objEl.TryGetProperty("format", out var ifmt)) items = items with { Format = ifmt.GetString() };
+        if (objEl.TryGetProperty("options", out var iopt) && iopt.ValueKind == JsonValueKind.Array)
+            items = items with { Options = iopt.EnumerateArray().Select(e => e.GetString() ?? "").ToList() };
+        if (objEl.TryGetProperty("min", out var imin)) items = items with { Min = imin.GetDouble() };
+        if (objEl.TryGetProperty("max", out var imax)) items = items with { Max = imax.GetDouble() };
+        return items;
     }
 
     private static IEnumerable<string> CollectFieldNamesRecursive(FieldDefinition f)
@@ -2863,10 +3030,12 @@ public class RecordingEngine
     /// <summary>
     /// 构建录制进度状态 JSON（phase 树形结构 + 字段 + 计数）
     /// </summary>
-    private string BuildPhaseStatus()
+    internal string BuildPhaseStatus()  // 测试9（BuildPhaseStatus 递归收集）直调验证 registeredFields 含嵌套字段名
     {
         var phaseTree = JsonSerializer.Deserialize<JsonElement>(SerializePhaseTree(_phases));
-        var fields = _script.Fields?.Select(f => f.Name).ToList() ?? [];
+        // 递归收集所有层级字段名（含嵌套子列/嵌套 loopSource），让 AI 每轮看到全部已注册字段（bizValues.field 取值更准，不编造嵌套字段名）。
+        // 对称修复：step 注册（operate fieldFields）的嵌套子列也变可见（既有可见性限制统一修复，非 loop phase 专享）。
+        var fields = _script.Fields?.SelectMany(CollectFieldNamesRecursive).ToList() ?? [];
         var status = new
         {
             currentPhase = _currentPhaseName,
@@ -2928,6 +3097,7 @@ public class RecordingEngine
           - ❌ 差：「处理报销」（过于笼统，丢失对象与目的）
           - ✅ 好：「填写差旅报销单的行程信息（为提交审批准备）」
         - **脚本 description 同样贴近任务描述**：用一句话概括脚本整体用途，保留任务描述的核心目标
+        - **AiGoal/Description 业务值用 {{字段名}} 占位符**（dreamy E8）：若 AiGoal/Description 含业务数据（会随填报变化的值，如公司名、合同号、单号），用 {{字段名}} 占位符替代（字段名取已注册的 field name）。例：任务"为上海家化公司填报合同" + company 字段已注册 → AiGoal "为 {{company}} 公司填报合同"。固定描述（不含业务数据）保持原文，不加占位符。回放期 ReplaceVars 自动替换 {{字段名}} 为实际值。
 
         ## returnData 生成（可选，改动5）
         - 仅当任务描述明确要求返回数据（如"提取单号""返回申请编号""保存后返回单号"）时才生成 returnData

@@ -91,7 +91,7 @@ public class LoopPhaseTests
 
         Assert.True(result.Success, result.ErrorMessage);
         // 3 行全部遍历，最后一行 rowIdx=2
-        Assert.Equal(2, result.Vars?["rowIndex"]);
+        Assert.Equal(2, result.Vars?["_rowIndex"]);
     }
 
     [Fact]
@@ -212,7 +212,7 @@ public class LoopPhaseTests
         var result = await engine.ExecuteAsync(script, fillData, page);
 
         Assert.True(result.Success, result.ErrorMessage);
-        Assert.True(result.Vars?.ContainsKey("rowIndex") ?? false, "loop 未迭代——Q4 入口归一未生效");
+        Assert.True(result.Vars?.ContainsKey("_rowIndex") ?? false, "loop 未迭代——Q4 入口归一未生效");
         // Q4 入口归一副作用：fillData 顶层值已从 JsonElement 转为 CLR（List<object>）
         Assert.False(fillData["items"] is System.Text.Json.JsonElement, "Q4 入口应已归一 fillData 中的 JsonElement");
     }
@@ -235,7 +235,7 @@ public class LoopPhaseTests
 
         Assert.True(result.Success, result.ErrorMessage);
         // 3 行遍历完，最后一次设置 rowIndex=2（rowIdx=2, offset=0）
-        Assert.Equal(2, result.Vars?["rowIndex"]);
+        Assert.Equal(2, result.Vars?["_rowIndex"]);
     }
 
     [Fact]
@@ -293,7 +293,7 @@ public class LoopPhaseTests
 
         Assert.True(result.Success, result.ErrorMessage);
         // loopCondition 不满足，无迭代发生，rowIndex 未设置
-        Assert.False(result.Vars?.ContainsKey("rowIndex") ?? false);
+        Assert.False(result.Vars?.ContainsKey("_rowIndex") ?? false);
     }
 
     [Fact]
@@ -366,7 +366,7 @@ public class LoopPhaseTests
 
         Assert.True(result.Success, result.ErrorMessage);
         // 验证遍历完成：rowIndex 应为 2（最后一行的 0-based index）
-        Assert.Equal(2, result.Vars?["rowIndex"]);
+        Assert.Equal(2, result.Vars?["_rowIndex"]);
     }
 
     [Fact]
@@ -422,8 +422,8 @@ public class LoopPhaseTests
         var result = await engine.ExecuteAsync(script, fillData, page);
 
         Assert.True(result.Success, result.ErrorMessage);
-        Assert.True(result.Vars?.ContainsKey("rowIndex") ?? false,
+        Assert.True(result.Vars?.ContainsKey("_rowIndex") ?? false,
             "loop 未迭代——GetLoopRows 取不到生产 List<object> 数据（is List<Dictionary<string,object>> 类型不匹配）");
-        Assert.Equal(2, result.Vars?["rowIndex"]);  // 3 行遍历，最后一行 rowIdx=2
+        Assert.Equal(2, result.Vars?["_rowIndex"]);  // 3 行遍历，最后一行 rowIdx=2
     }
 }

@@ -2,7 +2,7 @@
   "version": 2,
   "scriptId": "gt-28-detail-row-upload",
   "name": "GT28 明细行逐行上传（F/D3 rowIndexed 回放）",
-  "description": "F/D3：loop(loopSource=attachments) 逐行 upload，selector 含 {{rowIndex}}（@rowindex 定位），filePath={{path}} 取当前行附件。验证录制期 ParametrizeRowIndex 产出的 {{rowIndex}} selector 能正确回放（ReplaceVars 替换行索引 + ResolveUploadValue 取 path）",
+  "description": "F/D3：loop(loopSource=attachments) 逐行 upload，selector 含 {{_rowIndex}}（@rowindex 定位），filePath={{_path}} 取当前行附件。验证录制期 ParametrizeRowIndex 产出的 {{_rowIndex}} selector 能正确回放（ReplaceVars 替换行索引 + ResolveUploadValue 取 path）",
   "fields": [
     { "name": "attachments", "label": "明细附件数组", "type": "file", "uiComponent": "upload", "multiple": true }
   ],
@@ -14,9 +14,9 @@
       ]
     },
     {
-      "kind": "phase", "name": "detail-upload-loop", "type": "loop", "loopSource": "attachments", "rowIndexOffset": 1, "aiGoal": "逐行上传附件到各行独立 input（@rowindex={{rowIndex}}）",
+      "kind": "phase", "name": "detail-upload-loop", "type": "loop", "loopSource": "attachments", "rowIndexOffset": 1, "aiGoal": "逐行上传附件到各行独立 input（@rowindex={{_rowIndex}}）",
       "steps": [
-        { "kind": "step", "name": "upload-row", "action": "upload", "selector": "//tr[@rowindex='{{rowIndex}}']//input[@type='file']", "filePath": "{{path}}" }
+        { "kind": "step", "name": "upload-row", "action": "upload", "selector": "//tr[@rowindex='{{_rowIndex}}']//input[@type='file']", "filePath": "{{_path}}" }
       ]
     },
     {

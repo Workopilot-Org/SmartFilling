@@ -214,7 +214,7 @@
           { "name": "a3.txt", "path": "../tests/testpages/upload-sample.txt" }
         ]
       },
-      "covers": "F/D3：loop(loopSource=attachments) 逐行 upload + selector @rowindex={{rowIndex}} + filePath={{path}} 回放（rowIndexOffset=1，验证录制期 ParametrizeRowIndex 产出的 {{rowIndex}} selector 能正确回放）"
+      "covers": "F/D3：loop(loopSource=attachments) 逐行 upload + selector @rowindex={{_rowIndex}} + filePath={{_path}} 回放（rowIndexOffset=1，验证录制期 ParametrizeRowIndex 产出的 {{_rowIndex}} selector 能正确回放）"
     }
   ]
 }

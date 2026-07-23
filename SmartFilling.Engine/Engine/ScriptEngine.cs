@@ -96,7 +96,7 @@ public class ScriptEngine
                 if (phase.Condition != null)
                 {
                     bool met;
-                    try { met = await _detectEvaluator.EvaluateAsync(phase.Condition, ctx.ActivePage, script, phase.Iframe, ctx.Vars, ctx.ScopeChain); }
+                    try { met = await _detectEvaluator.EvaluateAsync(phase.Condition, ctx.ActivePage, script, phase.Iframe, ctx.Vars, ctx.ScopeChain, ctx.RowBaselineStack); }
                     catch (Exception ex) { _logger.LogWarning($"Phase {phase.Name} 条件检测失败: {ex.Message}"); met = false; }
                     if (!met)
                     {
@@ -174,7 +174,7 @@ public class ScriptEngine
             if (scriptFailed)
             {
                 var failMsg = lastErrorMessage ?? "脚本执行失败终止";
-                ctx.Vars["lastError"] = failMsg;  // 改动5：失败写 lastError 进 vars，供脚本 returnData 声明 error: "{{lastError}}" 取值
+                ctx.Vars["_lastError"] = failMsg;  // 改动5：失败写 _lastError 进 vars，供脚本 returnData 声明 error: "{{_lastError}}" 取值
                 _logger.LogInformation($"脚本执行完成 | status=failed phases={ctx.CompletedPhases.Count}/{script.Phases.Count} 耗时={totalSw.ElapsedMilliseconds}ms 原因={failMsg}");
                 await ReportFinalScreenshotAsync(ctx, false);
                 // #2：不显式传 FailureType.Deterministic——让 BuildResult 据 ctx.AiFallbackFailed 推断
@@ -191,13 +191,13 @@ public class ScriptEngine
         {
             var isTimeout = !ct.IsCancellationRequested;
             var msg = isTimeout ? "脚本执行超时" : "用户取消任务";
-            ctx.Vars["lastError"] = msg;  // 改动5：失败写 lastError
+            ctx.Vars["_lastError"] = msg;  // 改动5：失败写 _lastError
             await ReportFinalScreenshotAsync(ctx, false);
             return BuildResult(ctx, script, false, msg, totalSw, isTimeout ? FailureType.Timeout : FailureType.Cancelled);
         }
         catch (Exception ex)
         {
-            ctx.Vars["lastError"] = ex.Message;  // 改动5：失败写 lastError
+            ctx.Vars["_lastError"] = ex.Message;  // 改动5：失败写 _lastError
             await ReportFinalScreenshotAsync(ctx, false);
             return BuildResult(ctx, script, false, ex.Message, totalSw, FailureType.Deterministic);
         }
@@ -353,7 +353,7 @@ public class ScriptEngine
         if (phase.Condition != null)
         {
             bool met;
-            try { met = await _detectEvaluator.EvaluateAsync(phase.Condition, ctx.ActivePage, script, phase.Iframe, ctx.Vars, ctx.ScopeChain); }
+            try { met = await _detectEvaluator.EvaluateAsync(phase.Condition, ctx.ActivePage, script, phase.Iframe, ctx.Vars, ctx.ScopeChain, ctx.RowBaselineStack); }
             catch (Exception ex) { _logger.LogWarning($"Phase {phase.Name} 条件检测失败: {ex.Message}"); met = false; }  // R2-D：不加 when（phase 跳过非失败，IframeChainBrokenException 不穿透致 phase 失败）+ 加日志保 observability
             if (!met) return null;
         }
@@ -397,19 +397,15 @@ public class ScriptEngine
         if (d.Not != null) return FindNewRowAppearsInTree(d.Not);
         return null;
     }
-    /// <summary>DC13：Push 基线行数到 _lastRowCountStack（每行迭代开头，与 ScopeChain.Insert 同步）。嵌套 loop 各自独立栈层（Peek 取当前 loop 基线）。</summary>
+    /// <summary>DC13（P12 方式 A 根治，2026-07-23）：Push 基线行数到 ctx.RowBaselineStack（原塞 vars[_lastRowCountStack] 移出 vars 到独立字段——纯引擎内部，不进 vars 故用户 storeAs/占位符/字段名都碰不到）。每行迭代开头 Push，与 ScopeChain.Insert 同步；嵌套 loop 各自独立栈层（Peek 取当前 loop 基线）。</summary>
     internal static void PushRowCountStack(ExecutionContext ctx, int baseRowCount)
     {
-        if (ctx.Vars.TryGetValue("_lastRowCountStack", out var stkObj) && stkObj is Stack<int> stk)
-            stk.Push(baseRowCount);
-        else
-            ctx.Vars["_lastRowCountStack"] = new Stack<int>(new[] { baseRowCount });
+        ctx.RowBaselineStack.Push(baseRowCount);
     }
-    /// <summary>DC13：Pop 栈顶基线（每行迭代结束/出口，与 ScopeChain.RemoveAt 同步）。守卫：栈不存在/空时不操作（防 leak 的对称 Pop，嵌套 loop 隔离）。</summary>
+    /// <summary>DC13：Pop 栈顶基线（每行迭代结束/出口，与 ScopeChain.RemoveAt 同步）。守卫：栈空时不操作（防 leak 的对称 Pop，嵌套 loop 隔离）。</summary>
     internal static void PopRowCountStack(ExecutionContext ctx)
     {
-        if (ctx.Vars.TryGetValue("_lastRowCountStack", out var stkObj) && stkObj is Stack<int> stk && stk.Count > 0)
-            stk.Pop();
+        if (ctx.RowBaselineStack.Count > 0) ctx.RowBaselineStack.Pop();
     }
 
     async Task<PhaseResult> ExecuteLoopPhaseAsync(ExecutionContext ctx, ScriptV2 script, int phaseIdx, PhaseNode phase, Dictionary<string, object> fillData)
@@ -436,21 +432,21 @@ public class ScriptEngine
             if (!isRetry && phase.LoopCondition != null)
             {
                 bool loopCond;
-                try { loopCond = await _detectEvaluator.EvaluateAsync(phase.LoopCondition, ctx.ActivePage, script, phase.Iframe, ctx.Vars, ctx.ScopeChain); }
+                try { loopCond = await _detectEvaluator.EvaluateAsync(phase.LoopCondition, ctx.ActivePage, script, phase.Iframe, ctx.Vars, ctx.ScopeChain, ctx.RowBaselineStack); }
                 catch (Exception ex) { _logger.LogWarning($"Phase {phase.Name} loopCondition 检测失败: {ex.Message}"); loopCond = false; }  // R2-D：加日志保 observability
                 if (!loopCond) break;
             }
             isRetry = false;
             if (phase.LoopSource != null && rowIdx >= rows.Count) break;
 
-            ctx.Vars["rowIndex"] = rowIdx + (phase.RowIndexOffset ?? 0);
+            ctx.Vars["_rowIndex"] = rowIdx + (phase.RowIndexOffset ?? 0);
 
             // 记录表格行数供 new_row_appears 使用（R4 A′：与判断端 DetectEvaluator EvaluateAsync 的 new_row_appears frame 同源——
-            // 用 newRowDetect.Iframe 链 + tableSel ReplaceVars，否则 iframe 内 table 主文档找不到 → _lastRowCount 恒 0 → new_row_appears 误判）
+            // 用 newRowDetect.Iframe 链 + tableSel ReplaceVars，否则 iframe 内 table 主文档找不到 → RowBaselineStack 恒 0 → new_row_appears 误判）
             // DC10（a-a-4）：递归找 new_row_appears 节点（补顶层 gap——原 FirstOrDefault 只找顶层，嵌套 all/any/not 内的 new_row_appears 漏设基线 → silent 失效）。
-            // DC13（a-a-4）：_lastRowCount 改栈 _lastRowCountStack（每行迭代 Push/Pop，嵌套 loop 隔离——原单 key 共享，内层覆盖外层 → 外层比对错 silent）。
+            // DC13（a-a-4）：_lastRowCount 单值改栈（原 vars[_lastRowCountStack]，P12 方式 A 改动13 移出 vars → ctx.RowBaselineStack；每行迭代 Push/Pop，嵌套 loop 隔离——原单 key 共享，内层覆盖外层 → 外层比对错 silent）。
             var newRowDetect = TryFindNewRowAppearsNode(phase.Steps);
-            var tableSel = VariableHelper.ReplaceVars(newRowDetect?.Selector, ctx.ScopeChain, ctx.Vars);  // DC9 后 selector 必填（schema 强制）；null 时 Locator 抛→catch 基线 0
+            var tableSel = VariableHelper.ReplaceVars(newRowDetect?.Selector ?? "", ctx.ScopeChain, ctx.Vars);  // DC9 后 selector 必填（schema 强制）；null 时 ReplaceVars("") 返 ""，Locator("") 同样走 catch 基线 0（?? "" 防 nullable 警告）  // DC9 后 selector 必填（schema 强制）；null 时 Locator 抛→catch 基线 0
             var tableFrame = FrameResolver.ResolveChain(ctx.ActivePage, IframeChainMerger.Resolve(newRowDetect?.Iframe, phase.Iframe), ctx.ScopeChain, ctx.Vars);
             int baseRowCount;
             try { baseRowCount = await tableFrame.Locator(tableSel!).CountAsync(); }
@@ -685,7 +681,7 @@ public class ScriptEngine
             storeAs = allStoreAs.Count > 0 ? allStoreAs : null
         };
         var instruction = $"""
-            ## 任务: {aiGoal}
+            ## 任务: {VariableHelper.ReplaceVars(aiGoal, ctx.ScopeChain, ctx.Vars)}
             ## 任务数据（JSON）
             {JsonSerializer.Serialize(payload, _aiPayloadJsonOptions)}
             """;
@@ -867,7 +863,7 @@ public class ScriptEngine
         {
             try
             {
-                return await _detectEvaluator.EvaluateAsync(step.Condition, ctx.ActivePage, script, IframeChainMerger.Resolve(step.Iframe, phase.Iframe), ctx.Vars, ctx.ScopeChain);
+                return await _detectEvaluator.EvaluateAsync(step.Condition, ctx.ActivePage, script, IframeChainMerger.Resolve(step.Iframe, phase.Iframe), ctx.Vars, ctx.ScopeChain, ctx.RowBaselineStack);
             }
             catch (Exception ex) when (ex is not IframeChainBrokenException) { return false; }  // R2-D BUG-67-1：IframeChainBrokenException 穿透 → L924 onError 触发（step.Condition dead write 解除）
         }
@@ -1240,7 +1236,7 @@ public class ScriptEngine
         var allStoreAs = CollectAllStoreAs(phase.Steps.Skip(stepIdx).ToList());
         // 改动6.4：目标链（栈底 script.Description → 外层 phase → 当前 phase）
         var goalChain = ctx.GoalStack.Count > 0
-            ? string.Join("\n", ctx.GoalStack.Reverse().Select((g, i) => $"{new string(' ', i * 2)}- {g}"))
+            ? string.Join("\n", ctx.GoalStack.Reverse().Select((g, i) => $"{new string(' ', i * 2)}- {VariableHelper.ReplaceVars(g, ctx.ScopeChain, ctx.Vars)}"))
             : "- (无)";
         var payload = new
         {
@@ -1256,7 +1252,7 @@ public class ScriptEngine
             你是兜底执行者，目标是达成 phase 业务目标；当前 step 失败阻碍目标；基于页面+数据自主诊断修复，**包括必要时重做填值/提交等前面操作**，不要局限于让当前 step 机械成功。
             ## 任务目标链
             {goalChain}
-            ## 任务: {phase.AiGoal ?? phase.Name}
+            ## 任务: {VariableHelper.ReplaceVars(phase.AiGoal ?? phase.Name, ctx.ScopeChain, ctx.Vars)}
             ## 任务数据（JSON）
             {JsonSerializer.Serialize(payload, _aiPayloadJsonOptions)}
             """;
@@ -1290,7 +1286,7 @@ public class ScriptEngine
             _logger.LogError($"AI 兜底失败 | phase={phase.Name}\n" +
                 $"\t原因: {aiResult.ErrorMessage} | 策略: onError={onError}");
             _ = _progressReporter?.SendLogAsync($"❌ AI 兜底失败: {aiResult.ErrorMessage}");  // O3（第 2 轮核查）：step fallback 失败推前端（#4 可观测性精神，让用户实时看到兜底失败而非等最终 failed）
-            ctx.Vars["_lastAiFallbackError"] = aiResult.ErrorMessage;  // 观察③修复（2026-07-06）：失败原因存 vars，供 loop rre/se 分支 Message 拼接（return null 丢失 ErrorMessage，原 PhaseResult.Message 不含 AI 原因）
+            ctx.Vars["_lastAiFallbackError"] = aiResult.ErrorMessage ?? "";  // 观察③修复（2026-07-06）：失败原因存 vars，供 loop rre/se 分支 Message 拼接（return null 丢失 ErrorMessage，原 PhaseResult.Message 不含 AI 原因；?? "" 防 null 赋值）
         }
 
         return aiResult.Success ? new StepResult(aiResult.ResultValue)
@@ -1336,7 +1332,7 @@ public class ScriptEngine
         var availableData = BuildMaskedAllData(ctx, script);
         var allStoreAs = CollectAllStoreAs(phase.Steps.Skip(failedIdx >= 0 ? failedIdx : 0).ToList());
         var goalChain = ctx.GoalStack.Count > 0
-            ? string.Join("\n", ctx.GoalStack.Reverse().Select((g, i) => $"{new string(' ', i * 2)}- {g}"))
+            ? string.Join("\n", ctx.GoalStack.Reverse().Select((g, i) => $"{new string(' ', i * 2)}- {VariableHelper.ReplaceVars(g, ctx.ScopeChain, ctx.Vars)}"))
             : "- (无)";
         var payload = new
         {
@@ -1351,7 +1347,7 @@ public class ScriptEngine
         var instruction = $"""
             ## 任务目标链
             {goalChain}
-            ## 任务: {phaseGoal}
+            ## 任务: {VariableHelper.ReplaceVars(phaseGoal, ctx.ScopeChain, ctx.Vars)}
             ## 任务数据（JSON，phase 含已完成/失败/待完成步骤结构，从 failedStepIndex 起完成到 phase 末尾）
             {JsonSerializer.Serialize(payload, _aiPayloadJsonOptions)}
             """;
@@ -1589,7 +1585,7 @@ public class ScriptEngine
             ExecutionLog = ctx.Log,
             ErrorMessage = errorMessage,
             Status = success ? "completed" : "failed",
-            ReturnData = BuildReturnData(script, ctx, _logger),  // 改动5/修订6：按脚本 returnData 从 vars 组装（成功失败均组装；失败时 lastError 已写入 vars；传 logger R2-12 告警生效）
+            ReturnData = BuildReturnData(script, ctx, _logger),  // 改动5/修订6：按脚本 returnData 从 vars 组装（成功失败均组装；失败时 _lastError 已写入 vars；传 logger R2-12 告警生效）
             TotalDurationMs = (int)totalSw.ElapsedMilliseconds,
             Vars = ctx.Vars,
             Stats = stats,
@@ -1630,7 +1626,7 @@ public class ScriptEngine
             var raw = VariableHelper.ResolveRawValue(s, ctx.ScopeChain, ctx.Vars, logger);  // 修订6：传 logger（R2-12 嵌套解析中断告警生效）
             if (raw != null) return raw;
             var replaced = VariableHelper.ReplaceVars(s, ctx.ScopeChain, ctx.Vars);
-            // lastError 兜底（第5轮 ④-3）：未命中占位符（如成功路径 {{lastError}}——lastError 仅失败时写 vars）不留字面占位符，
+            // _lastError 兜底（第5轮 ④-3）：未命中占位符（如成功路径 {{_lastError}}——_lastError 仅失败时写 vars）不留字面占位符，
             // 返 ""（仅 returnData 路径，不动 step ReplaceVars 的"未命中保留字面"全局约定）
             if (ReturnDataPlaceholderRegex.IsMatch(replaced)) return "";
             return replaced;

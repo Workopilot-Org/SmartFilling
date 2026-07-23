@@ -90,20 +90,20 @@ public class EngineCompletionReportTests
     [Fact]
     public async Task ReturnData_UnresolvedPlaceholderOnSuccess_FallsBackToEmpty()
     {
-        // 修订6/修订7：成功路径未命中占位符（如 {{lastError}} 仅失败路径写 vars）兜底返 ""，不留字面 {{}}。
+        // 修订6/修订7：成功路径未命中占位符（如 {{_lastError}} 仅失败路径写 vars）兜底返 ""，不留字面 {{}}。
         // 深挖核查（2026-06-28）补：保护 ResolveReturnDataValue 的 IsMatch->"" 行为。
         var reporter = Substitute.For<ITaskProgressReporter>();
         var engine = new ScriptEngine(new NullLogger(), Options(), reporter);
         var script = new ScriptBuilder()
             .AddPhase("main", aiGoal: "测试", steps: [ScriptBuilder.CheckStep(ScriptBuilder.Detect("always"), "phase_success")])
-            .WithReturnData(new() { ["err"] = "{{lastError}}" })
+            .WithReturnData(new() { ["err"] = "{{_lastError}}" })
             .Build();
         MockPageFactory.Create(out var page);
 
         var result = await engine.ExecuteAsync(script, new(), page);
 
         Assert.True(result.Success, result.ErrorMessage);
-        // 成功路径 lastError 未写 vars -> 占位符未命中 -> 兜底返 ""（非字面 "{{lastError}}"）
+        // 成功路径 _lastError 未写 vars -> 占位符未命中 -> 兜底返 ""（非字面 "{{_lastError}}"）
         Assert.Equal("", result.ReturnData!["err"]!.ToString());
     }
 }

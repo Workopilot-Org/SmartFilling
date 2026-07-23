@@ -23,23 +23,24 @@ public class DetectEvaluator
         ScriptV2 script,
         string[]? phaseIframe,
         Dictionary<string, object> vars,
-        List<Dictionary<string, object>> scopeChain)
+        List<Dictionary<string, object>> scopeChain,
+        Stack<int> rowBaselineStack)
     {
         // 组合条件
         if (detect.All != null)
         {
             foreach (var c in detect.All)
-                if (!await EvaluateAsync(c, activePage, script, phaseIframe, vars, scopeChain)) return false;
+                if (!await EvaluateAsync(c, activePage, script, phaseIframe, vars, scopeChain, rowBaselineStack)) return false;
             return true;
         }
         if (detect.Any != null)
         {
             foreach (var c in detect.Any)
-                if (await EvaluateAsync(c, activePage, script, phaseIframe, vars, scopeChain)) return true;
+                if (await EvaluateAsync(c, activePage, script, phaseIframe, vars, scopeChain, rowBaselineStack)) return true;
             return false;
         }
         if (detect.Not != null)
-            return !await EvaluateAsync(detect.Not, activePage, script, phaseIframe, vars, scopeChain);
+            return !await EvaluateAsync(detect.Not, activePage, script, phaseIframe, vars, scopeChain, rowBaselineStack);
 
         var type = detect.Type;
         if (type == null) return false;
@@ -85,7 +86,7 @@ public class DetectEvaluator
                 "selector_checked" => await frame.Locator(dSelector!).IsCheckedAsync(),
                 "selector_selected" => await EvaluateSelectorSelectedAsync(frame, dSelector, dValue),
                 "selector_count" => await EvaluateSelectorCount(frame, dSelector, detect.Count),
-                "new_row_appears" => await EvaluateNewRowAppearsAsync(frame, dSelector, vars),
+                "new_row_appears" => await EvaluateNewRowAppearsAsync(frame, dSelector, rowBaselineStack),
                 "js" => EvaluateJsCondition(detect.Check!, scopeChain, vars),
                 "data_exists" => VariableHelper.FieldExists(scopeChain, detect.Field),
                 "always" => true,
@@ -162,7 +163,7 @@ public class DetectEvaluator
         }
     }
 
-    private async Task<bool> EvaluateNewRowAppearsAsync(ILocator frame, string? selector, Dictionary<string, object> vars)
+    private async Task<bool> EvaluateNewRowAppearsAsync(ILocator frame, string? selector, Stack<int> rowBaselineStack)
     {
         // DC9 S3（a-a-4）：selector=null 显式失败（schema/校验层已挡空 selector，到不了这里；ref 提取后空/手编遗漏时兜底）。
         // 不依赖 Playwright Locator(null) 抛错——否则 silent 兜底基线=0→currentCount>0 永远 true→loop 死循环。
@@ -170,10 +171,10 @@ public class DetectEvaluator
         try
         {
             var currentCount = await frame.Locator(selector).CountAsync();
-            // DC13（a-a-4）：读 _lastRowCountStack 栈顶（当前 loop 基线）。两端协同——ScriptEngine 每 row Push、出口 Pop；此处 Peek 取当前 loop 基线，嵌套 loop 隔离。
-            if (vars.TryGetValue("_lastRowCountStack", out var stkObj) && stkObj is Stack<int> stk && stk.Count > 0)
-                return currentCount > stk.Peek();
-            _logger.LogWarning("detect new_row_appears 基线栈 _lastRowCountStack 未设（非 loop phase？DC14 schema 应挡），返回 false");
+            // DC13（P12 方式 A 根治，2026-07-23）：读 ctx.RowBaselineStack 栈顶（传入参数，原塞 vars[_lastRowCountStack] 移出 vars 到 ExecutionContext 独立字段）。两端协同——ScriptEngine 每 row Push、出口 Pop；此处 Peek 取当前 loop 基线，嵌套 loop 隔离。
+            if (rowBaselineStack.Count > 0)
+                return currentCount > rowBaselineStack.Peek();
+            _logger.LogWarning("detect new_row_appears 基线栈 RowBaselineStack 未设（非 loop phase？DC14 schema 应挡），返回 false");
             return false;
         }
         catch

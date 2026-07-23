@@ -170,7 +170,7 @@
               }
             }
           },
-          "description": "DC14：sequential/ai phase 不设 _lastRowCount 基线 → check new_row_appears silent 失效，schema 架构挡（allOf 合并 stepNode + detect/condition→NoNewRow——condition 同样依赖基线，须一并挡，否则 step.condition new_row_appears 静默 false 跳过 step）；嵌套 phase 走 phaseNode 递归按各自 type 重评估"
+          "description": "DC14：sequential/ai phase 不设 RowBaselineStack 基线 → check new_row_appears silent 失效，schema 架构挡（allOf 合并 stepNode + detect/condition→NoNewRow——condition 同样依赖基线，须一并挡，否则 step.condition new_row_appears 静默 false 跳过 step）；嵌套 phase 走 phaseNode 递归按各自 type 重评估"
         }
       ]
     },

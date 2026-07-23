@@ -129,6 +129,11 @@ public static class ScriptLoader
                 return null;
             }
             using var stream = asm.GetManifestResourceStream(resName);
+            if (stream == null)  // GetManifestResourceStream 返 null if 资源不存在（resName 在列表但程序集无此资源，罕见），守卫防 NRE
+            {
+                Console.Error.WriteLine("[SmartFilling] 脚本 Schema 嵌入资源流为空（GetManifestResourceStream 返 null）--schema 校验已降级禁用。");
+                return null;
+            }
             using var reader = new StreamReader(stream);
             return JsonSchema.FromText(reader.ReadToEnd());
         }
@@ -286,7 +291,7 @@ public static class ScriptLoader
         ValidateDetectUntilUsage(script.Phases, errors);
 
         // DC11 硬校验（a-a-4 第54轮升级，2026-07-10）：loop phase 内多个 new_row_appears（check.detect 或 step.Condition）须同 selector+iframe，
-        // 否则 _lastRowCount 基线语义混乱（TryFindNewRowAppearsNode 取第一个，其他不一致的 silent 误判）。schema 表达不了跨节点同-selector 约束，用 ScriptLoader 硬校验。
+        // 否则 RowBaselineStack 基线语义混乱（TryFindNewRowAppearsNode 取第一个，其他不一致的 silent 误判）。schema 表达不了跨节点同-selector 约束，用 ScriptLoader 硬校验。
         ValidateNewRowAppearsBaselineConsistency(script.Phases, errors);
 
         // A 组校验加固（R2-6/R3-3/R3-4/R4-1/R4-2）
@@ -307,7 +312,7 @@ public static class ScriptLoader
     /// <summary>
     /// ④-8：命名冲突校验（运行时 fillData/vars 全局扁平、无词法作用域，"同作用域"检查必漏报，故全局）。
     /// ① 字段名∩storeAs 名：字段名进 fillData（scopeChain 末层），{{X}} 查找 scopeChain 优先于 vars → 字段名永久遮蔽同名 storeAs，静默取错值。
-    /// ② 字段名∩系统保留字（🔴-3）：字段名遮蔽 rowIndex/_lastUrl/_lastRowCount/lastError（如 returnData error:"{{lastError}}" 取字段值非错误消息）。
+    /// ② 字段名∩系统保留字（🔴-3）：字段名遮蔽系统变量 _rowIndex/_lastError/_lastUrl/_rowItem/_path/_name/_url/_lastDialogMessage/_lastAiFallbackError（如 returnData error:"{{_lastError}}" 取字段值非错误消息）。_lastRowCountStack 已移出 vars（改动13 P12 方式 A），不在保留字清单。
     /// （storeAs 名撞保留字已由 ValidateSingleVarName 校验；storeAs-vs-storeAs 同名覆盖允许——故意覆盖是合法用法。）
     /// </summary>
     private static void ValidateNameCollisions(ScriptV2 script, HashSet<string> fieldNames, List<string> errors)
@@ -318,7 +323,7 @@ public static class ScriptLoader
             if (storeAsNames.Contains(fn))
                 errors.Add($"字段名 '{fn}' 与某 step 的 storeAs 变量名同名——运行时 fillData 会永久遮蔽 vars 同名变量，静默取错值");
             if (ReservedVarNames.Contains(fn))
-                errors.Add($"字段名 '{fn}' 与系统保留变量同名（{string.Join("/", ReservedVarNames)}）——会遮蔽系统变量，静默取错值（如 {{lastError}}/{{rowIndex}} 取字段值）");
+                errors.Add($"字段名 '{fn}' 与系统保留变量同名（{string.Join("/", ReservedVarNames)}）——会遮蔽系统变量，静默取错值（如 {{_lastError}}/{{_rowIndex}} 取字段值）");
         }
     }
 
@@ -377,7 +382,7 @@ public static class ScriptLoader
         // 递归收集所有层级字段名（含嵌套 field.Fields）
         var definedFields = new HashSet<string>();
         CollectFieldDefinitions(script.Fields, definedFields);
-        var specialVars = ReservedVarNames;  // ④-8：复用 ReservedVarNames（含 lastError）——step 里 {{lastError}} 引用放行（R2-12 范围内的系统变量）
+        var specialVars = ReservedVarNames;  // ④-8：复用 ReservedVarNames（含 _lastError/_rowIndex/_rowItem/_path/_name/_url/_lastDialogMessage/_lastAiFallbackError）——step 里这些系统变量占位符引用放行（R2-12 范围内的系统变量）
         // F4(R1-3)：storeAs 变量在运行时存入 vars，可被后续 step {{var}} 引用（设计十五核心特性），并入合法占位符集合，
         // 否则 step A storeAs:"total" → step B value:"{{total}}" 会误报「total 未在 fields[] 定义」阻断加载。
         // 注意：returnData 顶层占位符本就不经本方法校验（仅 WalkItems(Phases)），不受影响。
@@ -519,7 +524,7 @@ public static class ScriptLoader
 
     /// <summary>系统保留变量名（④-8：补 lastError；改 public 供录制层复用；FrozenSet 不可变防误改）。
     /// 字段名/storeAs 名禁用这些——字段名进 fillData（scopeChain 末层）会永久遮蔽系统变量；storeAs 名撞这些会遮蔽引擎写入的系统变量。</summary>
-    public static readonly FrozenSet<string> ReservedVarNames = new[] { "rowIndex", "_lastUrl", "_lastRowCount", "lastError" }.ToFrozenSet();
+    public static readonly FrozenSet<string> ReservedVarNames = new[] { "_rowIndex", "_lastError", "_lastUrl", "_rowItem", "_path", "_name", "_url", "_lastDialogMessage", "_lastAiFallbackError" }.ToFrozenSet();
 
     /// <summary>DEC-7（2026-07-13）：系统凭据字段名（username/password）——Worker fillData 硬编码这两个 key 存 payload 传来的用户名/解密密码
     /// （见 AutomationWsClient.BuildFillDataAndDownloadAttachmentsAsync：fillData["username"]=payload.Username / fillData["password"]=decryptedPassword）。
@@ -624,16 +629,21 @@ public static class ScriptLoader
         foreach (var field in fields)
         {
             names.Add(field.Name);
-            // 批次7-loop（28 golden 暴露的 latent bug 修复）：loopSource=type=file 字段（如 attachments）的 loop rowData
-            // 是附件对象 {name,path,url}（ConvertAttachmentUrls 产出），{{path}}/{{name}}/{{url}} 取当前行附件属性
-            // （回放期 scopeChain 内层 rowData 命中）。原 ValidatePlaceholders 只放行顶层 field 名，拒绝 {{path}} →
-            // 录制产出的 loopSource=attachments upload 脚本（filePath={{path}}）回放期 LoadFromJson 加载失败 400。
-            // 对 type=file 字段补附件子字段 name/path/url 为合法占位符（加载放行；回放期 scopeChain 解析）。
+            // 批次7-loop（28 golden 暴露的 latent bug 修复；改动11 占位符别名加 _ 前缀）：loopSource=type=file 字段（如 attachments）的 loop rowData
+            // 是附件对象 {name,path,url}（ConvertAttachmentUrls 产出，对象 key 不变），{{_path}}/{{_name}}/{{_url}} 引用当前行附件属性
+            // （ReplaceVars/ResolveRawValue 特判 _path→path 映射查附件对象 key；回放期 scopeChain 内层 rowData 命中）。
+            // 原 ValidatePlaceholders 只放行顶层 field 名，拒绝 {{_path}} → 录制产出的 loopSource=attachments upload 脚本（filePath={{_path}}）回放期 LoadFromJson 加载失败 400。
+            // 对 type=file 字段补附件别名 _path/_name/_url 为合法占位符（加载放行；回放期 scopeChain 解析）。
             if (field.Type == "file")
             {
-                names.Add("path");
-                names.Add("name");
-                names.Add("url");
+                names.Add("_path");
+                names.Add("_name");
+                names.Add("_url");
+            }
+            // 改动10：type=array && Items!=null（简单值数组）补 _rowItem 放行 {{_rowItem}}（冗余但保留：specialVars=ReservedVarNames 改动12 后已含 _rowItem 放行，此 definedFields 补充为 fallback，零风险）
+            if (field.Type == "array" && field.Items != null)
+            {
+                names.Add("_rowItem");
             }
             if (field.Fields is { Count: > 0 })
                 CollectFieldDefinitions(field.Fields, names);
@@ -818,9 +828,9 @@ public static class ScriptLoader
             if (item is PhaseNode phase)
             {
                 if (phase.Condition != null && ContainsNewRowAppears(phase.Condition))
-                    errors.Add($"new_row_appears 不能用于 phase.condition「{phase.Name}」（无 tableFrame 基线机制，第一轮 _lastRowCount 未设）");
+                    errors.Add($"new_row_appears 不能用于 phase.condition「{phase.Name}」（无 tableFrame 基线机制，第一轮 RowBaselineStack 未设）");
                 if (phase.LoopCondition != null && ContainsNewRowAppears(phase.LoopCondition))
-                    errors.Add($"new_row_appears 不能用于 phase.loopCondition「{phase.Name}」（loop 每轮评估，_lastRowCount 语义崩）");
+                    errors.Add($"new_row_appears 不能用于 phase.loopCondition「{phase.Name}」（loop 每轮评估，RowBaselineStack 语义崩）");
                 if (phase.Steps.Count > 0) ValidateDetectUntilUsage(phase.Steps, errors);
             }
         }

@@ -159,7 +159,7 @@ public class SelectorExtractor
         if (hasStableId) return 1;
         if (hasStableName) return 2;
         if (hasStableData) return 3;
-        if (Regex.IsMatch(s, @"normalize-space\(\.\)\s*=\s*(?:'[^']*'|""[^""]*"")")) return 4;  // 精确文本锚点
+        if (Regex.IsMatch(s, @"normalize-space\((?:\.|text\(\))?\)\s*=\s*(?:'[^']*'|""[^""]*"")")) return 4;  // 精确文本锚点（dreamy D-2：覆盖 . / 空 / text() 三种第一参数形式，原只覆盖 .）
         if (hasStableOther) return 5;
         if (s.Contains("contains(concat(' ',@class", StringComparison.Ordinal)) return 5;  // class 精确匹配（ExtractAsync priority 5）
         if (s.Contains("contains(", StringComparison.Ordinal)) return 7;  // 属性/文本包含匹配（NeedsFallback）
@@ -747,7 +747,7 @@ public class SelectorExtractor
                 var value = anchor["value"].GetString();
                 // 轴方向必须与锚点相对 target 的位置相反：锚点在前→向后(following-sibling)够到 target，在后→向前(preceding-sibling)。
                 // （原直接把 side 当轴名会反，阶段四永远匹配 0 → 静默失效；2026-06-16 实证修复）
-                var axis = SiblingAxisForSide(side);
+                var axis = SiblingAxisForSide(side!);
                 // level==0：直接兄弟轴；level>0：跨父级叔伯，限定到兄弟分支后代（距离有界，原无界文档轴会跨级误匹配）
                 // 属性锚点用 * 通配（属性值已足够唯一）
                 var xpath = level == 0
@@ -764,7 +764,7 @@ public class SelectorExtractor
                 var side = anchor["side"].GetString();
                 var tag = anchor["tag"].GetString();
                 var text = anchor["value"].GetString();
-                var axis = SiblingAxisForSide(side);
+                var axis = SiblingAxisForSide(side!);
                 // 限距策略同属性锚点：level>0 限定到兄弟分支后代。文本锚点用具体 tag（缩小匹配范围）
                 var xpath = level == 0
                     ? $"//{tag}[contains(.,{XpathEscape(text!)})]/{axis}::{targetTag}"
