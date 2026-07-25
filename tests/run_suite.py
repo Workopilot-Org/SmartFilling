@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 SmartFilling golden 套件回放器（HTTP 模式）。
-- 按 tests/manifest.json 逐条 POST 脚本到 Worker /api/fill/start
+- 按 tests/manifest.json 逐条 POST 脚本到 Worker /tasks（协议剥离后路由资源化 /api/fill/start→/tasks，请求体带 taskId）
 - 轮询 Worker Serilog 日志判定每任务状态（Completed/Failed）+ 抓取该任务日志窗口
 - 汇总写 tests/results.json，打印汇总表
 用法: python tests/run_suite.py [脚本名过滤...]
 """
-import json, time, os, sys, glob, urllib.request, urllib.error
+import json, time, os, sys, glob, urllib.request, urllib.error, uuid
 
 # Windows 控制台默认 GBK 编码，covers/错误行含 ⑬/⓪ 等 GBK 外字符时 print 会 UnicodeEncodeError 崩溃。
 # 重配 stdout/stderr 为 utf-8（errors=replace 兜底），防崩溃；results.json 用 json.dump(utf-8) 写入不受影响。
@@ -32,16 +32,24 @@ def worker_log_path():
 
 
 def post_script(script_obj, fill_data, retries=8):
+    # H5：自生成 taskId（决策11-A Worker 不自生成），uuid4 hex 取前 8 位对齐原 Worker 自生成风格
+    task_id = uuid.uuid4().hex[:8]
     body = json.dumps(
-        {"documentTypeId": "gt", "documentTypeName": "golden-test",
+        {"taskId": task_id,
+         "documentTypeId": "gt", "documentTypeName": "golden-test",
          "scripts": [script_obj], "fillData": fill_data},
         ensure_ascii=False).encode("utf-8")
     for attempt in range(retries):
-        req = urllib.request.Request(WORKER + "/api/fill/start", data=body,
+        # 协议剥离后 Worker 路由资源化：/api/fill/start -> /tasks，新任务返 202 {taskId}
+        req = urllib.request.Request(WORKER + "/tasks", data=body,
                                      headers={"Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=20) as r:
-                return json.loads(r.read().decode())["taskId"]
+                resp = json.loads(r.read().decode())
+                # 202 新任务返 taskId；200 幂等（在跑/已结束）返同 taskId——校验响应 taskId 与生成一致（防 Worker 静默自生成违反决策11-A）
+                resp_task_id = resp.get("taskId")
+                assert resp_task_id == task_id, f"taskId 不一致: 生成={task_id} 响应={resp_task_id}"
+                return resp_task_id
         except urllib.error.HTTPError as e:
             # 503 = 并发槽位未释放，等待重试
             if e.code == 503 and attempt < retries - 1:

@@ -68,9 +68,10 @@ public class TaskOrchestrationService
         ScriptEngine engine,
         IPage page,
         string taskId,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? progressCallbackUrl = null)  // R2-1：传 callbackUrl 给 CreateForTask（HttpProgressReporter push 用）
     {
-        var reporter = _reporterFactory.CreateForTask(taskId);
+        var reporter = _reporterFactory.CreateForTask(taskId, progressCallbackUrl);
         var mergedVars = new Dictionary<string, object>();
         var allLog = new List<Engine.Logging.StepLog>();
         Dictionary<string, object>? mergedReturnData = null;

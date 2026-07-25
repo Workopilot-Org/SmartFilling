@@ -1,6 +1,6 @@
 # Golden 套件覆盖矩阵
 
-回放日期 2026-06-25｜HTTP 模式｜Worker `POST /api/fill/start`（直连，不经 App）
+回放日期 2026-06-25｜HTTP 模式｜Worker `POST /tasks`（直连，不经 App；协议剥离后路由资源化 /api/fill/start→/tasks，请求体带 taskId）
 图例：✓=回放通过｜脚本列指向 `tests/golden-scripts/<file>`｜类别：**D**=确定性(0 token) **S**=半确定性 **A**=需服务(非确定性,烧 token)
 
 ## 1. Action 覆盖（22 种，全覆盖）

@@ -27,6 +27,8 @@ public class AiActionExecutor
     private readonly ConversationCompressor _compressor;
     private readonly CompressionOptions? _compression;
     private byte[]? _lastScreenshot;
+    /// <summary>get_snapshot 返回的快照中 ref→描述 映射，供 FormatToolCall 将 ref 解析为可读描述。</summary>
+    private Dictionary<string, string>? _lastRefDescriptions;
 
     /// <summary>F8(f)：敏感字段（source=system 或 key 名单）的真实值（每次 ExecuteAsync 从 scopeChain/vars 收集），
     /// toolResult/evaluate 脱敏判据用。不依赖 AI 传 field（AI fill/type/select 工具无 field 参数）。
@@ -166,6 +168,7 @@ public class AiActionExecutor
                     if (tc.Name == "get_snapshot")
                     {
                         _compressor.RegisterSnapshotId(tc.Id);
+                        _lastRefDescriptions = ParseRefDescriptions(toolResult);
                         snapshotCount++;
                         hasSnapshot = true;
                     }
@@ -190,7 +193,7 @@ public class AiActionExecutor
 
                 // #4：该轮 AI 工具摘要推前端 ReceiveLog（fire-and-forget 不阻塞 AI 循环；🤖 前缀在推送端，handler 无法区分 AI 日志）。日志路径不脱敏（按脱敏总原则）。
                 // N3（第 2 轮核查）：补 token（计划 #4 要求 _logger/推送含工具名/结果/轮次/token）
-                var toolSummary = string.Join(", ", response.ToolCalls.Select(t => t.Name));
+                var toolSummary = string.Join(", ", response.ToolCalls.Select(FormatToolCall));
                 var tokenSoFar = totalInputTokens + totalOutputTokens;
                 _logger.LogInformation($"🤖 AI 轮次 {turnsUsed} | 工具: {toolSummary} | 累计 token={tokenSoFar}");
                 _ = _reporter?.SendLogAsync($"🤖 [轮次 {turnsUsed}] 调用工具: {toolSummary} | 累计 token={tokenSoFar}");
@@ -563,6 +566,107 @@ public class AiActionExecutor
         if (!string.IsNullOrEmpty(refValue))
             return $"aria-ref={refValue}";
         return args.GetValueOrDefault("selector")?.ToString() ?? "";
+    }
+
+    /// <summary>
+    /// 格式化 AI 工具调用摘要（含关键参数，ref 解析为快照中的描述）。
+    /// </summary>
+    private string FormatToolCall(AiToolCall tc)
+    {
+        var args = tc.Arguments;
+        if (args == null || args.Count == 0) return tc.Name;
+
+        var show = tc.Name switch
+        {
+            "click" => ShowArgs(args, "selector", "ref"),
+            "fill" or "type" or "select" => ShowArgs(args, "value", "selector", "ref"),
+            "press" => ShowArgs(args, "key"),
+            "hover" => ShowArgs(args, "selector", "ref"),
+            "scroll" => ShowArgs(args, "direction", "selector"),
+            "navigate" => ShowArgs(args, "url"),
+            "evaluate" => ShowArgs(args, "code"),
+            "upload" => ShowArgs(args, "filePath"),
+            "switchTab" => ShowArgs(args, "index"),
+            _ => null
+        };
+        return show != null ? $"{tc.Name}({show})" : tc.Name;
+    }
+
+    /// <summary>
+    /// 提取指定 key 的参数值，返回 key="value" 格式。ref 自动解析为快照中的描述。
+    /// </summary>
+    private string? ShowArgs(Dictionary<string, object> args, params string[] keys)
+    {
+        var parts = new List<string>();
+        foreach (var key in keys)
+        {
+            if (args.TryGetValue(key, out var val) && val != null)
+            {
+                var str = val.ToString() ?? "";
+                if (!string.IsNullOrEmpty(str))
+                {
+                    if (key == "ref" && _lastRefDescriptions?.TryGetValue(str, out var desc) == true)
+                        parts.Add($"ref={str}({desc})");
+                    else
+                        parts.Add($"{key}=\"{str}\"");
+                }
+            }
+        }
+        return parts.Count > 0 ? string.Join(", ", parts) : null;
+    }
+
+    /// <summary>
+    /// 解析 Playwright AriaSnapshot (Ai 模式) 文本，提取 ref→描述 映射。
+    /// 格式：- <role> [attributes] [ref=XXX]: <description>
+    /// 描述为空时用 role 兜底（避免显示 ref=f3e307(f3e307)）。
+    /// </summary>
+    private static Dictionary<string, string> ParseRefDescriptions(string snapshot)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(snapshot)) return map;
+        foreach (var line in snapshot.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            // 查找 [ref=XXX] 标记
+            var refStart = line.IndexOf("[ref=", StringComparison.Ordinal);
+            if (refStart < 0) continue;
+            var refEnd = line.IndexOf(']', refStart + 5);
+            if (refEnd < 0) continue;
+            var refValue = line[(refStart + 5)..refEnd];
+            if (string.IsNullOrEmpty(refValue)) continue;
+
+            // 提取冒号后的描述（如果有）
+            var colonPos = line.IndexOf(':', refEnd + 1);
+            var desc = colonPos > 0
+                ? line[(colonPos + 1)..].Trim()
+                : line[(refEnd + 1)..].Trim();
+
+            // 描述为空或等于 ref 自身时，提取 role 兜底（格式：- <role> ...）
+            if (string.IsNullOrEmpty(desc) || desc == refValue)
+            {
+                var role = ExtractRole(line);
+                map[refValue] = !string.IsNullOrEmpty(role) ? role : refValue;
+            }
+            else
+            {
+                map[refValue] = desc;
+            }
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// 从快照行中提取 role（- <role> ...），如 generic/button/textbox 等。
+    /// 处理缩进行（子元素）。
+    /// </summary>
+    private static string? ExtractRole(string line)
+    {
+        var trimmed = line.TrimStart();
+        if (trimmed.Length < 2 || trimmed[0] != '-' || trimmed[1] != ' ') return null;
+        var afterPrefix = trimmed[2..].TrimStart();
+        if (string.IsNullOrEmpty(afterPrefix)) return null;
+        // role 到第一个空格或 [ 为止
+        var roleEnd = afterPrefix.IndexOfAny([' ', '[']);
+        return roleEnd > 0 ? afterPrefix[..roleEnd] : afterPrefix;
     }
 
     #endregion

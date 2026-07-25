@@ -35,12 +35,13 @@ public class MultiTurnToolCallDashScopeTests
             return null;
         }
         // Development 只覆盖 ApiKey；ModelId/Endpoint 用 base 值（appsettings.json 的 AiProvider 段）
+        // CircuitBreakerThreshold = 100 防真实 DashScope 偶发失败触发断路器中断多轮 tool call 历史重建验证（playful-greeting-diffie：扁平字段迁入 ModelApiErrorOptions 子对象）
         return new AiOptions
         {
             ApiKey = apiKey!,
             ModelId = ai.TryGetProperty("ModelId", out var m) ? (m.GetString() ?? "deepseek-v3.2") : "deepseek-v3.2",
             Endpoint = ai.TryGetProperty("Endpoint", out var e) ? (e.GetString() ?? "https://dashscope.aliyuncs.com/compatible-mode/v1") : "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            CircuitBreakerThreshold = 100
+            ModelApiErrorOptions = new ModelApiErrorOptions { CircuitBreakerThreshold = 100 }
         };
     }
 

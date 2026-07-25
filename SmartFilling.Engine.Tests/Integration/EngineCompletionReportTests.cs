@@ -45,7 +45,7 @@ public class EngineCompletionReportTests
         var reporter = Substitute.For<ITaskProgressReporter>();
         var engine = new ScriptEngine(new NullLogger(), Options(), reporter);
 
-        // script_fail -> engine 失败，但不再发 SendTaskStoppedAsync（completionHandler 按 FailureType 分发）
+        // script_fail -> engine 失败（completionHandler 按 FailureType 分发），不再发 SendTaskCompletedAsync（P3-1 engine 退化为只发截图）
         var script = new ScriptBuilder()
             .AddPhase("main", aiGoal: "测试", steps: [ScriptBuilder.CheckStep(ScriptBuilder.Detect("always"), "script_fail", message: "失败终止")])
             .Build();
@@ -54,7 +54,6 @@ public class EngineCompletionReportTests
         var result = await engine.ExecuteAsync(script, new(), page);
 
         Assert.False(result.Success);
-        await reporter.DidNotReceive().SendTaskStoppedAsync(Arg.Any<string>());
         await reporter.DidNotReceive().SendTaskCompletedAsync(Arg.Any<ScriptResult>());
     }
 

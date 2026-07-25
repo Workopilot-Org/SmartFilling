@@ -5,20 +5,15 @@
     "ApiKey": "",
     "ModelId": "deepseek-v3.2",
     "Endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "CircuitBreakerThreshold": 5
+    "ModelApiErrorOptions": {
+      "MaxRetryCount": 2,
+      "RetryBaseInterval": 1000,
+      "CircuitBreakerThreshold": 5
+    }
   },
-  "WsClient": {
-    "_comment3": "【WS 模式必填】ServerUrl=平台 WS 地址、ClientId=本 Worker 设备 ID。HTTP 模式（WorkerOptions.TaskMode=HTTP）可不填。",
-    "ServerUrl": "",
-    "ClientId": "",
-    "HeartbeatIntervalSeconds": 30,
-    "ReconnectIntervalSeconds": 10
-  },
-  "Platform": {
-    "_comment4": "JavaApiUrl=Java 平台地址（脚本下发 / 回调）；AttachmentBaseUrl=附件下载基址（HTTP 模式指向 App）。ApiKey 为平台鉴权 key。",
-    "JavaApiUrl": "",
-    "AttachmentBaseUrl": "http://localhost:5000",
-    "ApiKey": "",
-    "DefaultTimeoutSeconds": 30
+  "WorkerOptions": {
+    "_comment5": "协议剥离后单一 HTTP 模式（TaskMode/BaseUrl 已删，WsClient/Platform 段已随 ws 上移 PlatformAdapter）。push/pull 总开关：push=true 且请求体传 progressCallbackUrl/completeCallbackUrl 才 HTTP POST 回调；pull=true 写内存/JSONL 供 GET 查。字段名 PushOptions（非 Push）避免与 bool push 在 ASP.NET Core case-insensitive 配置绑定下冲突。完整 WorkerOptions 段（含 TaskResultStore/Types/Retry）见 appsettings.json。",
+    "ProgressReport": { "Enabled": { "Push": false, "Pull": true } },
+    "CompleteReport": { "Enabled": { "Push": false, "Pull": true } }
   }
 }

@@ -528,6 +528,7 @@ public class StepExecutor
         var aiTotalTimeout = _options.DefaultAiTimeout;  // H.5.2/H.4.4：AI 用独立超时，不套 step.Timeout（确定性操作超时套到多轮 AI 必超时）
         var aiIframe = IframeChainMerger.Resolve(step.Iframe, phaseIframe);
 
+        _ = _reporter?.SendLogAsync($"🔄 [phase {ctx.PhaseName}] [step {step.Name ?? step.Action}] description={step.Description} AI action 启动");
         var aiResult = await _aiActionExecutor.ExecuteAsync(
             ctx.ActivePage, ctx, aiDescription, aiIframe, script,
             aiMaxTurns, aiTotalTimeout, ctx.Vars, ctx.ScopeChain,
@@ -602,13 +603,14 @@ public class StepExecutor
                     case "pixel":
                         {
                             var sliderSelector = step.SliderSelector ?? throw new ArgumentException("captcha pixel 需要 sliderSelector");
-                            // F2：ddddocr slide_comparison 契约——target（不带缺口完整背景图）+ background（带缺口背景图）对比找缺口位置。
-                            // 原代码截同一 bgSelector 两次（两图恒等→偏移≈0，pixel 型必失败），改为截两不同元素。
+                            // 注释修正（2026-07-24）：ddddocr slide_comparison 官方文档 target_img=带坑位图, background_img=完整背景图。
+                            // 之前误传 target=完整图, background=带缺口图，但 cv2.absdiff 对称故结果不受影响（golden 21 通过）。
+                            // 现交换传参对齐 ddddocr 文档语义，与 SlideComparisonAsync 参数名（targetImage=带坑位, backgroundImage=完整背景）一致。
                             var targetSelector = step.TargetSelector ?? throw new ArgumentException("captcha pixel 需要 targetSelector（不带缺口的完整背景图）");
                             var bgSelector = step.BackgroundSelector ?? throw new ArgumentException("captcha pixel 需要 backgroundSelector（带缺口的背景图）");
                             var targetScreenshot = await frame.Locator(targetSelector).ScreenshotAsync();
                             var bgScreenshot = await frame.Locator(bgSelector).ScreenshotAsync();
-                            var offset = await captchaService.SlideComparisonAsync(targetScreenshot, bgScreenshot, ctx.Ct);
+                            var offset = await captchaService.SlideComparisonAsync(bgScreenshot, targetScreenshot, ctx.Ct);
                             var slider = frame.Locator(sliderSelector);
                             var box = await slider.BoundingBoxAsync();
                             if (box != null)

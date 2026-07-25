@@ -68,6 +68,12 @@ public class RecordingEngine
     // ⚠️ 清空点在 RecordAsync 入口（per-recording），不在 ClearAcceptedSets（per-step）——后者会每步清空破坏跨步骤复用（R2-1 修正）。
     private readonly Dictionary<string, string> _recordVarValues = new();
     private List<AttachmentInfo>? _attachments;  // 批次7-C3：录制期附件（RecordController.Start 传入；upload 执行层 SetInputFiles + BuildDataHints 提示用）
+    // 前置脚本补充 AI + Captcha 能力（playful-greeting-diffie 计划第4部分）：前置脚本创建 ScriptEngine 时传 _aiProvider + _captchaService，
+    // 让前置脚本可用 ai action/ai phase/AI fallback/captcha（否则含这些能力的脚本会 silent 失败）。
+    // 全限定 SmartFilling.Engine.Services.CaptchaService——RecordingEngine 在 SmartFilling.App.Recording 命名空间，
+    // 父命名空间 SmartFilling.App 下有 Services 子命名空间（SmartFilling.App.Services），Services. 会优先解析为
+    // SmartFilling.App.Services.CaptchaService（不存在）→ CS0246；不能照抄 ScriptEngine 的 Services. 简写（ScriptEngine 在 SmartFilling.Engine.Engine 命名空间，父命名空间 SmartFilling.Engine 下 Services 即目标）
+    private readonly SmartFilling.Engine.Services.CaptchaService? _captchaService;
 
     // 辅助属性
     private PhaseNode CurrentPhase => FindPhase(_phases, _currentPhaseName)
@@ -105,13 +111,14 @@ public class RecordingEngine
         return System.Text.Json.JsonSerializer.Serialize(filtered);
     }
 
-    public RecordingEngine(IAiProvider aiProvider, ScriptService scriptService, EngineILogger logger, EngineOptions engineOptions, AppOptions appOptions, List<AttachmentInfo>? attachments = null)
+    public RecordingEngine(IAiProvider aiProvider, ScriptService scriptService, EngineILogger logger, EngineOptions engineOptions, AppOptions appOptions, SmartFilling.Engine.Services.CaptchaService? captchaService = null, List<AttachmentInfo>? attachments = null)
     {
         _aiProvider = aiProvider;
         _scriptService = scriptService;
         _logger = logger;
         _engineOptions = engineOptions;
         _appOptions = appOptions;
+        _captchaService = captchaService;  // 前置脚本补充 captcha 能力（playful-greeting-diffie 计划第4部分）
         _attachments = attachments;  // 批次7-C4：录制期附件（upload 执行层 + BuildDataHints 用）
         _compressor = new ConversationCompressor();
         _actionExecutor = new RecordingActionExecutor(_logger, _appOptions, ResolveSystemVar, attachments, _engineOptions.UploadRootPath);  // 批次7-C6/A1：传 attachments + UploadRootPath（附件 Path 相对需 rootPath）
@@ -134,7 +141,6 @@ public class RecordingEngine
         public Task SendLogAsync(string message, string? stepName = null) => _engine.OnAiReporterLogAsync(message);
         public Task SendScreenshotAsync(byte[] screenshot, string? stepDescription = null) => Task.CompletedTask;
         public Task SendFinalScreenshotAsync(byte[] screenshot) => Task.CompletedTask;
-        public Task SendTaskStoppedAsync(string reason) => Task.CompletedTask;
         public Task SendTaskCompletedAsync(ScriptResult result) => Task.CompletedTask;
     }
 
@@ -202,7 +208,9 @@ public class RecordingEngine
                     {
                         // ④ 合法：执行（须保留执行失败处理——ExecuteAsync Success=false→ct 取消走 Cancelled / 真实失败 throw Failed；勿误删，否则破坏 Cancel_DuringPrerequisiteScript 测试）
                         await LogAsync($"执行前置脚本: {preScript.Name}");
-                        var engine = new ScriptEngine(_logger, _engineOptions);
+                        // 计划第4部分：传 _aiProvider + _captchaService，让前置脚本获得 AI（ai action/ai phase/AI fallback）+ 验证码能力
+                        // （含这些能力的脚本在原 2 参构造下会 silent 失败）。_aiProvider 非 null（RecordController 已注入），_captchaService 可 null（Worker 兜底）
+                        var engine = new ScriptEngine(_logger, _engineOptions, _aiProvider, _captchaService);
                         var fillData = new Dictionary<string, object>();
                         if (!string.IsNullOrEmpty(username)) fillData["username"] = username;
                         if (!string.IsNullOrEmpty(password)) fillData["password"] = password;
@@ -3185,7 +3193,10 @@ public class RecordingEngine
         }
         catch (Exception ex)
         {
-            // AI 总结失败不影响录制结果
+            // AI 总结失败不影响录制结果。但 OpenAiProvider 是 App 端 Singleton，总结失败若计入断路器连续失败计数，
+            // 连续多次录制完成阶段总结失败会累积达到 CircuitBreakerThreshold → 后续录制主循环 SendMessageAsync 在入口断路器检查直接抛→录制完全不可用（需重启 App）。
+            // 总结属"失败不影响主流程"路径，重置断路器计数防累积阻塞录制。
+            _aiProvider.ResetBreaker();
             await LogAsync($"AI 总结阶段目标失败（不影响录制结果）: {ex.Message}");
         }
         return script;

@@ -10,4 +10,7 @@ public class AppOptions
 
     /// <summary>录制 AI 循环的最大轮数上限，防录制死循环。录制专属配置（选C：从 EngineOptions 迁入）。</summary>
     public int MaxRecordTurns { get; set; } = 100;
+
+    /// <summary>AI 对话收集会话过期时间（分钟），超时未访问自动清理</summary>
+    public int ChatSessionExpirationMinutes { get; set; } = 60;
 }

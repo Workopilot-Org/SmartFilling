@@ -527,7 +527,7 @@ public static class ScriptLoader
     public static readonly FrozenSet<string> ReservedVarNames = new[] { "_rowIndex", "_lastError", "_lastUrl", "_rowItem", "_path", "_name", "_url", "_lastDialogMessage", "_lastAiFallbackError" }.ToFrozenSet();
 
     /// <summary>DEC-7（2026-07-13）：系统凭据字段名（username/password）——Worker fillData 硬编码这两个 key 存 payload 传来的用户名/解密密码
-    /// （见 AutomationWsClient.BuildFillDataAndDownloadAttachmentsAsync：fillData["username"]=payload.Username / fillData["password"]=decryptedPassword）。
+    /// （见 PlatformAdapter PlatformWsClient.BuildFillData：fillData["username"]=payload.Username / fillData["password"]=decryptedPassword；协议剥离后 AutomationWsClient 上移 PlatformAdapter，Worker 侧已删）。
     /// 规则：① fields 用这两个名时必须 source=system（否则收集层/录制行为与 Worker 硬编码 fillData 不一致，{{username}}/{{password}} 取错值，silent）；
     /// ② storeAs 名禁用这两个（storeAs 写 vars，但 fillData 系统凭据在 scopeChain 末层优先于 vars → storeAs 被永久遮蔽取错值，silent）。
     /// **不并入 ReservedVarNames**——那会禁止 fields 用这俩名，破坏 {{username}}/{{password}} 正常用法（fields name=username source=system 是合法的、是登录场景标准用法）。
@@ -1099,7 +1099,7 @@ public static class ScriptLoader
 
     /// <summary>
     /// DEC-7 X（2026-07-13）：系统凭据字段（name∈SystemCredentialKeys，即 username/password）的 source 必须为 system。
-    /// Worker fillData 硬编码 fillData["username"]=payload.Username / fillData["password"]=decryptedPassword（见 AutomationWsClient.BuildFillDataAndDownloadAttachmentsAsync），
+    /// Worker fillData 硬编码 fillData["username"]=payload.Username / fillData["password"]=decryptedPassword（见 PlatformAdapter PlatformWsClient.BuildFillData；协议剥离后 AutomationWsClient 上移 PlatformAdapter，Worker 侧已删），
     /// 故 fields 用这两个名时必须是 source=system（系统注入，非用户收集）——否则 source=user/computed 的同名字段会被 Worker 硬编码值覆盖（或反向：收集层/录制行为与 Worker 不一致），
     /// {{username}}/{{password}} 取错值（silent）。递归遍历 script.Fields 含 field.Fields 嵌套（仿 ValidateFileUiComponent 递归模式；嵌套子字段同样约束）。
     /// 触发路径：App SaveScript 保存 + Worker FetchScripts 加载 + 手工 LoadFromJson（全路径，X 加在 ValidateAndGetErrors 覆盖所有）。

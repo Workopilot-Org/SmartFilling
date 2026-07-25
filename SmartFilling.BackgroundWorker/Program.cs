@@ -2,7 +2,6 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Serilog;
 using SmartFilling.BackgroundWorker;
 using SmartFilling.BackgroundWorker.Configuration;
-using SmartFilling.BackgroundWorker.Hubs;
 using SmartFilling.BackgroundWorker.Services;
 using EngineILogger = SmartFilling.Engine.Logging.ILogger;
 using SmartFilling.Engine.Models;
@@ -16,12 +15,6 @@ Log.Logger = new LoggerConfiguration()
     .CreateLogger();
 builder.Host.UseSerilog();
 
-// ========== 模式判断 ==========
-var workerConfig = builder.Configuration.GetSection("WorkerOptions").Get<WorkerOptions>() ?? new WorkerOptions();
-var taskMode = workerConfig.TaskMode;
-if (taskMode != "WS" && taskMode != "HTTP")
-    throw new InvalidOperationException($"TaskMode 仅支持 \"WS\" 或 \"HTTP\"，当前值: \"{taskMode}\"");
-
 // ========== Engine 日志适配 ==========
 builder.Services.AddSingleton<EngineILogger>(new SerilogLoggerAdapter(Log.Logger));
 
@@ -31,14 +24,14 @@ builder.Services.AddControllers().AddJsonOptions(o => o.JsonSerializerOptions.Co
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// CaptchaService（使用 Engine 共享类）
+// CaptchaService（使用 Engine 共享类；CaptchaController HTTP 端点已随协议剥离砍删，仅保留 Service 注册——回放 captcha action 走 Engine 内部 CaptchaService 直连 Python 8000）
 builder.Services.AddSingleton<CaptchaService>(sp =>
 {
     var url = builder.Configuration["CaptchaService:Url"] ?? "http://localhost:8000";
     return new CaptchaService(new CaptchaServiceOptions { Url = url });
 });
 
-// HttpClient Singleton（AI API 和平台 API 共享，TCP/TLS 连接复用）
+// HttpClient Singleton（AI API / 平台 API / 回调推送共享，TCP/TLS 连接复用）
 builder.Services.AddSingleton<System.Net.Http.HttpClient>(sp =>
 {
     var handler = new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(10) };
@@ -46,13 +39,14 @@ builder.Services.AddSingleton<System.Net.Http.HttpClient>(sp =>
 });
 
 // 共享服务
-builder.Services.Configure<EngineOptions>(builder.Configuration.GetSection("ScriptEngine"));  // J.1.2：EngineOptions 自动绑定（和 App 一致），修双轨技术债 + 漏读字段
-// 附件根目录对齐：UploadRootPath 为空时注入 Worker ContentRootPath，确保附件下载保存（AttachmentService）与 upload action 查找（StepExecutor）用同一根目录（默认部署/--contentroot 覆盖均对齐）
+builder.Services.Configure<EngineOptions>(builder.Configuration.GetSection("ScriptEngine"));  // J.1.2：EngineOptions 自动绑定（和 App 一致）
+// 附件根目录对齐：UploadRootPath 为空时注入 Worker ContentRootPath，确保附件下载保存（AttachmentService）与 upload action 查找（StepExecutor）用同一根目录
 builder.Services.PostConfigure<EngineOptions>(opt =>
 {
     if (string.IsNullOrEmpty(opt.UploadRootPath))
         opt.UploadRootPath = builder.Environment.ContentRootPath;
 });
+var workerConfig = builder.Configuration.GetSection("WorkerOptions").Get<WorkerOptions>() ?? new WorkerOptions();
 builder.Services.AddSingleton(workerConfig);
 builder.Services.Configure<WorkerOptions>(builder.Configuration.GetSection("WorkerOptions"));
 builder.Services.AddSingleton<TaskConcurrencyManager>();
@@ -60,28 +54,15 @@ builder.Services.AddSingleton<TaskRunnerFactory>();
 builder.Services.AddSingleton<TaskOrchestrationService>();  // TaskExecutionService 的依赖（多脚本编排 + 任务级 CTS 管理）
 builder.Services.AddSingleton<TaskExecutionService>();
 
-if (taskMode == "WS")
-{
-    // WS 模式
-    builder.Services.Configure<WsClientOptions>(builder.Configuration.GetSection("WsClient"));
-    builder.Services.Configure<PlatformOptions>(builder.Configuration.GetSection("Platform"));
-    builder.Services.AddSingleton<AutomationWsClient>();
-    builder.Services.AddHostedService(sp => sp.GetRequiredService<AutomationWsClient>());
-    builder.Services.AddSingleton<ScriptService>();
-    builder.Services.AddSingleton<IProgressReporterFactory, WsProgressReporterFactory>();
-    builder.Services.AddSingleton<ITaskCompletionHandler, WsTaskCompletionHandler>();
-}
-else
-{
-    // HTTP 模式
-    builder.Services.AddSignalR();
-    builder.Services.AddSingleton<IProgressReporterFactory, SignalRProgressReporterFactory>();
-    builder.Services.AddSingleton<ITaskCompletionHandler, HttpTaskCompletionHandler>();
-}
+// ========== 协议剥离后单一 HTTP 模式（删双轨 if + TaskMode + AddSignalR/MapHub FillHub） ==========
+builder.Services.AddSingleton<TaskResultStore>();           // 终态 JSONL 持久化（GET 地基，决策7）
+builder.Services.AddSingleton<InMemoryProgressStore>();     // 进度内存字典（pull 模式 GET 查，第3轮-C7）
+builder.Services.AddSingleton<TaskActivityTracker>();       // 任务活动跟踪（/health?taskId + App/PlatformAdapter 健康检测，G1-11）
+builder.Services.AddSingleton<IProgressReporterFactory, HttpProgressReporterFactory>();  // 替代 SignalRProgressReporterFactory（FillHub 砍后不再用 SignalR 推送）
+builder.Services.AddSingleton<ITaskCompletionHandler, HttpTaskCompletionHandler>();
 
 // CORS
 // ["*"] 或含 "*" 表示不校验（AllowAnyOrigin）；否则按具体 origin 白名单 + AllowCredentials。
-// 注意：不能用 `origins is ["*"]` 判断——WithOrigins 会把 "*" 当字面 origin，真实浏览器 Origin 永不匹配→不加 CORS 头。
 var corsOrigins = workerConfig.CorsOrigins ?? [];
 var allowAnyOrigin = Array.IndexOf(corsOrigins, "*") >= 0;
 Log.Information("CORS 策略: AllowAnyOrigin={AllowAny}, Origins=[{Origins}], 长度={Len}", allowAnyOrigin, string.Join(",", corsOrigins), corsOrigins.Length);
@@ -96,17 +77,17 @@ builder.Services.AddCors(options =>
     });
 });
 
-Log.Information("服务启动中，模式: {Mode}", taskMode);
+Log.Information("服务启动中，模式: HTTP Server");
 
 // ========== 构建 ==========
 var app = builder.Build();
 
-// schema 降级检查（决策1）：Engine 层 ScriptLoader 无 Serilog 依赖，加载失败时仅 Console.Error 即时输出 + 暴露 SchemaLoadFailed 标志；宿主（Worker）启动时用 Serilog 持久化到文件日志，运维可查（Worker 填报 LoadFromJson 含 schema 校验，降级会致抓不到未知字段）
+// schema 降级检查（决策1）：Engine 层 ScriptLoader 无 Serilog 依赖，加载失败时仅 Console.Error 即时输出 + 暴露 SchemaLoadFailed 标志；宿主（Worker）启动时用 Serilog 持久化到文件日志，运维可查
 if (ScriptLoader.SchemaLoadFailed)
     Log.Logger.Error("脚本 Schema (script-v2.json) 加载失败——schema 校验已降级禁用。Worker 填报 LoadFromJson 将抓不到未知字段（可能 silent 放过病态脚本），请检查 SmartFilling.Engine 嵌入资源配置。");
 
 // R2-8：启用 ForwardedHeaders——反代（Nginx 等）下从 X-Forwarded-Host/Proto 还原浏览器原始地址，
-// 使 Request.Host/Scheme 反映浏览器视角（FillController workerHubUrl 用 Request.Host 构造，反代下否则是内部地址前端连不上）。
+// 使 Request.Host/Scheme 反映浏览器视角（health/swagger 等 URL 用 Request.Host 构造，反代下否则是内部地址网关连不上）。
 // 必须在 UseRouting/UseCors 之前。默认仅信任 localhost 代理；跨机反代需配置 KnownProxies/KnownNetworks（见 ForwardedHeadersOptions）。
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
@@ -115,12 +96,9 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 
 app.UseSwagger();
 app.UseSwaggerUI();
-app.UseRouting(); // CORS 默认策略需在端点路由之后评估；缺此行则跨域响应头不被添加（浏览器拦截 SignalR negotiate，前端报 Failed to complete negotiation）
+app.UseRouting(); // CORS 默认策略需在端点路由之后评估；缺此行则跨域响应头不被添加
 app.UseCors();
 app.MapControllers();
-
-if (taskMode != "WS")
-    app.MapHub<FillHub>("/hubs/fill");
 
 app.MapGet("/", (HttpContext ctx) =>
 {
@@ -128,9 +106,9 @@ app.MapGet("/", (HttpContext ctx) =>
     return Results.Ok(new
     {
         service = "SmartFilling Background Worker",
-        mode = taskMode == "WS" ? "WS Client" : "HTTP Server",
+        mode = "HTTP Server",  // WS 模式已移除（协议剥离），单一 HTTP
         status = "running",
-        health = $"{baseUrl}/api/fill/health",
+        health = $"{baseUrl}/health",  // FillController health 路由改为 ~/health
         swagger = $"{baseUrl}/swagger"
     });
 });

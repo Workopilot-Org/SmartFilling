@@ -3,7 +3,12 @@
   "AiProvider": {
     "ApiKey": "",
     "ModelId": "deepseek-v3.2",
-    "Endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    "Endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "ModelApiErrorOptions": {
+      "MaxRetryCount": 2,
+      "RetryBaseInterval": 1000,
+      "CircuitBreakerThreshold": 5
+    }
   },
   "Platform": {
     "_comment2": "对接业务平台（填报脚本下发 / 单据创建）。NetApiUrl=.NET 平台、JavaApiUrl=Java 平台，按部署填其一或两者；ApiKey 为平台鉴权 key。",

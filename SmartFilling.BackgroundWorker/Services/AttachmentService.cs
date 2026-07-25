@@ -151,7 +151,7 @@ public class AttachmentService
         {
             // R3-8：附件是任务必需输入，下载失败应 fail-fast（任务立即失败上报），不再容错吞异常——
             // 原容错会让缺失附件 path 为空，若 upload step 走 skipIfDataEmpty/ElementMissing 被跳过，
-            // 任务会误报"成功"但附件未传（不完整结果）。调用处 FillController(HTTP)/AutomationWsClient(WS)
+            // 任务会误报"成功"但附件未传（不完整结果）。调用处 FillController(HTTP)（WS 模式附件下载随 ws 上移 PlatformAdapter，Worker 侧仅 FillController 调用）
             // 外层 try-catch 会捕获并上报任务失败。
             logger.LogError($"附件下载失败: 名称={originalName}, Url={downloadUrl} - {ex.Message}");
             throw new InvalidOperationException($"附件下载失败: 名称={originalName}, Url={downloadUrl} - {ex.Message}", ex);

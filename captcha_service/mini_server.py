@@ -64,9 +64,24 @@ def do_sm(r: SlideReq):
 
 @app.post("/slide_comparison")
 def do_sc(r: SlideReq):
+    target_img = base64.b64decode(r.target_image)
+    background_img = base64.b64decode(r.background_image)
+    # 统一尺寸：防 DPR 舍入误差导致两图差 1-3 像素（golden 21 125% DPI 下 303x152 vs 302x153）
+    from PIL import Image
+    import io
+    ti = Image.open(io.BytesIO(target_img))
+    bi = Image.open(io.BytesIO(background_img))
+    if ti.size != bi.size:
+        max_w = max(ti.width, bi.width)
+        max_h = max(ti.height, bi.height)
+        ti = ti.resize((max_w, max_h), Image.LANCZOS)
+        bi = bi.resize((max_w, max_h), Image.LANCZOS)
+        buf_t = io.BytesIO(); ti.save(buf_t, format='PNG')
+        buf_b = io.BytesIO(); bi.save(buf_b, format='PNG')
+        target_img = buf_t.getvalue()
+        background_img = buf_b.getvalue()
     with _lock:
-        return {"result": _slide.slide_comparison(base64.b64decode(r.target_image),
-                                                  base64.b64decode(r.background_image))}
+        return {"result": _slide.slide_comparison(target_img, background_img)}
 
 
 if __name__ == "__main__":

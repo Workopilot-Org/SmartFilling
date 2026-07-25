@@ -17,7 +17,7 @@
     <ProjectReference Include="..\SmartFilling.Engine\SmartFilling.Engine.csproj" />
   </ItemGroup>
 
-  <!-- DEC-3 层2：AutomationWsClient.BuildFillDataAndDownloadAttachmentsAsync 提为 internal 供 Worker.Tests 接线测试（Engine.csproj:19 有先例） -->
+  <!-- InternalsVisibleTo 供 Worker.Tests 访问 Worker internal 成员（原 AutomationWsClient helper 已随 ws 上移 PlatformAdapter 删除，保留以备将来 internal 方法接线测试） -->
   <ItemGroup>
     <InternalsVisibleTo Include="SmartFilling.BackgroundWorker.Tests" />
   </ItemGroup>

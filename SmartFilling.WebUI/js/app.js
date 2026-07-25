@@ -7,9 +7,6 @@ const appConnection = new signalR.HubConnectionBuilder()
     .withAutomaticReconnect()
     .build();
 
-// Worker Hub 连接（填报进度/截图，按需创建）
-let workerConnection = null;
-
 let currentTaskId = null;
 let currentScriptData = null;
 let currentTab = 'record';
@@ -126,9 +123,10 @@ function addLog(message, tab = null, raw = false) {
 }
 
 // ========== App Hub SignalR 事件（录制面板） ==========
-appConnection.on("ReceiveLog", ({ taskId, message, stepName, timestamp }) => {
+appConnection.on("ReceiveLog", ({ taskId, message, stepName, timestamp, type }) => {
     if (taskId !== currentTaskId) return;
-    const p = previews.record;
+    // 第3轮-B2：按 type 分发——fill 消息写 previews.fill，record 写 previews.record（type 缺省向后兼容=record）
+    const p = type === 'fill' ? previews.fill : previews.record;
     const div = document.createElement('div');
     div.className = 'log-entry';
     const stepTag = stepName ? `<span class="step-tag">[${stepName}]</span> ` : '';
@@ -137,9 +135,10 @@ appConnection.on("ReceiveLog", ({ taskId, message, stepName, timestamp }) => {
     p.logs.scrollTop = p.logs.scrollHeight;
 });
 
-appConnection.on("ReceiveScreenshot", ({ taskId, image }) => {
+appConnection.on("ReceiveScreenshot", ({ taskId, image, type }) => {
     if (taskId !== currentTaskId) return;
-    previews.record.screenshot.src = `data:image/png;base64,${image}`;
+    const p = type === 'fill' ? previews.fill : previews.record;
+    p.screenshot.src = `data:image/png;base64,${image}`;
 });
 
 appConnection.on("RequestHelp", ({ taskId, question, image }) => {
@@ -151,8 +150,20 @@ appConnection.on("RequestHelp", ({ taskId, question, image }) => {
     document.getElementById('interactive-help').classList.remove('hidden');
 });
 
-appConnection.on("TaskCompleted", ({ taskId, result, script, errorMessage }) => {
-    if (taskId !== currentTaskId) return;  // 顺带修既有 bug：过滤 taskId（与 ReceiveLog/RequestHelp/TaskStopped 一致），防多任务终态串扰
+appConnection.on("TaskCompleted", ({ taskId, result, script, errorMessage, resultData, stats, failureType, screenshot, type }) => {
+    if (taskId !== currentTaskId) return;  // 顺带修既有 bug：过滤 taskId（与 ReceiveLog/RequestHelp 一致），防多任务终态串扰（TaskStopped handler 已删，见下方注释）
+    // 第3轮-B2：填报进度经 App AgentHub 推送（workerHubUrl 已删），TaskCompleted 按 type 分发处理 record/fill 分支
+    if (type === 'fill') {
+        // 填报终态：Success/Failed 走 handleFillCompleted；Stopped（用户取消→停止语义）走停止态
+        if (result === 'Stopped') {
+            addLog('任务已被停止', 'fill');
+            finalizeFillState({ status: 'idle', statusText: '已停止', chatStatusText: '已停止', buttonMode: 'retry' });
+        } else {
+            handleFillCompleted(result, resultData, screenshot, errorMessage, failureType);
+        }
+        return;
+    }
+    // record 分支（录制逻辑，type=record 或缺省）
     if (currentTab === 'record') {
         // 录制终态（完成/取消/超时/失败）公共收尾：关闭请求帮助组件 + 清空输入框（三态都生效；原 TaskCompleted handler 漏关导致 request_help 挂着不关闭）
         document.getElementById('interactive-help').classList.add('hidden');
@@ -197,34 +208,14 @@ appConnection.on("TaskCompleted", ({ taskId, result, script, errorMessage }) => 
         }
         previews.record.stopBtn.classList.add('hidden');
     }
-    // #46：删 fill 分支死代码（Worker workerHubUrl 必非空→appConnection TaskCompleted 的 fill 分支不可达；双 Hub 职责：App Hub 只管录制）
-    // 录制成功/取消且有可保存脚本时，保留 currentTaskId 供保存使用
+    // 录制成功/取消且有可保存脚本时，保留 currentTaskId 供保存使用（填报终态已在上方 type=fill 分支处理，此处仅 record）
     // 在保存或放弃脚本时再清除
     if (currentTab !== 'record' || !currentScriptData) {
         currentTaskId = null;
     }
 });
 
-appConnection.on("TaskStopped", ({ taskId }) => {
-    if (taskId !== currentTaskId) return;  // P3-8：过滤 taskId（原不过滤，串扰其他任务终态）
-    const tab = currentTab;
-    setStatus('idle', '已停止', tab);
-    addLog('任务已被停止', tab);
-    previews[tab].stopBtn.classList.add('hidden');
-
-    if (tab === 'record') {
-        const startBtn = document.getElementById('btn-start-record');
-        if (startBtn) { startBtn.disabled = false; startBtn.textContent = '开始录制'; }
-        // 录制选择附件按钮联动恢复（与 startBtn 同恢复点，5 处之一）：用户点停止时恢复
-        document.getElementById('btn-select-record-files').disabled = false;
-        document.getElementById('record-file-input').disabled = false;
-    } else if (tab === 'fill') {
-        const backBtn = document.getElementById('btn-back-to-selector');
-        if (backBtn) backBtn.style.display = 'inline-block';
-    }
-
-    currentTaskId = null;
-});
+// O1（选D）：TaskStopped handler 已删——协议剥离后全项目无发送方（Worker HttpProgressReporter.SendTaskStoppedAsync=no-op + App RecordingEngine.SendTaskStoppedAsync=no-op + RecordController 终态走 TaskCompleted），record 停止走 TaskCompleted result="Cancelled"、fill 停止走 TaskCompleted result="Stopped"，停止态由 TaskCompleted handler + finalizeFillState 完整处理。
 
 // 启动 App Hub
 appConnection.start().then(() => addLog('已连接到服务器', 'record')).catch(err => addLog('连接失败: ' + err, 'record'));
@@ -293,6 +284,14 @@ document.getElementById('btn-start-record').addEventListener('click', async () =
         setStatus('running', '录制中...', 'record');
         addLog(`开始录制: ${docType}`, 'record');
         isStoppedByUser = false;
+
+        // 确保 SignalR 连接就绪，否则先重连
+        if (appConnection.state !== signalR.HubConnectionState.Connected) {
+            addLog('⏳ 正在连接服务器...', 'record');
+            setStatus('running', '正在连接...', 'record');
+        }
+        await ensureSignalRConnection(5000);
+
         const res = await fetch('/api/record/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -653,26 +652,34 @@ async function startDynamicFillTask(collectedData, summary) {
     setStatus('running', '正在启动填报...', 'fill');
     addLog(`开始执行填报任务: ${docType}`, 'fill');
 
-    // #8：显示预填充数据（参考 v1，让用户看到本次填的是什么）。
-    // 时序优势：此刻 collectedData 尚未含 username/password（下方 fillUsername/fillPassword 才加），天然避开密码。
-    // 复合类型（对象/数组如 attachments）JSON.stringify，避免 [object Object]。
-    // 按脱敏总原则（日志不脱敏）：用户自填数据前端可见用于诊断，明文显示（去掉原计划 sensitive 脱敏）。
-    if (collectedData && Object.keys(collectedData).length > 0) {
-        addLog('────────────────────────────', 'fill');
-        addLog(`📊 预填充数据 (${Object.keys(collectedData).length} 项):`, 'fill');
-        for (const [key, value] of Object.entries(collectedData)) {
-            const display = (value !== null && typeof value === 'object') ? JSON.stringify(value) : value;
-            addLog(`   • ${key}: ${display}`, 'fill');
-        }
-        addLog('────────────────────────────', 'fill');
-    }
-
+    // 读取表单中的用户名密码，合并到预填充数据
     const fillUsername = document.getElementById('fill-username').value;
     const fillPassword = document.getElementById('fill-password').value;
     if (fillUsername) collectedData['username'] = fillUsername;
     if (fillPassword) collectedData['password'] = fillPassword;
 
+    // #8：显示预填充数据（让用户看到本次填的是什么，含用户名密码）。
+    // 复合类型（对象/数组如 attachments）JSON.stringify，避免 [object Object]。
+    // 密码字段脱敏显示为 8 个 *。
+    if (collectedData && Object.keys(collectedData).length > 0) {
+        addLog('────────────────────────────', 'fill');
+        addLog(`📊 预填充数据 (${Object.keys(collectedData).length} 项):`, 'fill');
+        for (const [key, value] of Object.entries(collectedData)) {
+            const display = (value !== null && typeof value === 'object') ? JSON.stringify(value) : value;
+            const masked = key.toLowerCase() === 'password' ? '********' : display;
+            addLog(`   • ${key}: ${masked}`, 'fill');
+        }
+        addLog('────────────────────────────', 'fill');
+    }
+
     try {
+        // 确保 SignalR 连接就绪，否则先重连（含状态提示，防重启后任务变孤儿）
+        if (appConnection.state !== signalR.HubConnectionState.Connected) {
+            addLog('⏳ 正在连接服务器...', 'fill');
+            setStatus('running', '正在连接...', 'fill');
+        }
+        await ensureSignalRConnection(5000);
+
         const res = await fetch('/api/fill/start-dynamic', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -689,94 +696,18 @@ async function startDynamicFillTask(collectedData, summary) {
         const task = await res.json();
         currentTaskId = task.taskId;
         if (!currentTaskId) throw new Error('任务ID为空');
+        // 🔴 协议剥离补漏：填报进度/终态经 App AgentHub 推送（type=fill），AgentHubExtensions 用 Clients.Group(taskId) 推送。
+        // 前端必须 JoinTask 加入 group 才能收到 ReceiveLog/ReceiveScreenshot/TaskCompleted，否则 Worker push 回调经 App 转发后前端静默收不到（silent-success：任务正常执行但前端无任何反馈）。
+        await appConnection.invoke("JoinTask", currentTaskId);
         addLog(`填报任务 ID: ${currentTaskId}`, 'fill');
 
-        // v2 双 Hub：连接 Worker Hub 接收填报进度
-        const workerHubUrl = task.workerHubUrl;
-        if (workerHubUrl) {
-            addLog(`正在连接 Worker 实时通信...`, 'fill');
-            workerConnection = new signalR.HubConnectionBuilder()
-                // 跨域连 Worker Hub：Worker 用 AllowAnyOrigin（"["*"]" 不校验，回 *），而 signalr 浏览器端默认 withCredentials=true，
-                // 会触发“带 credentials 时 origin 不能为 *”被浏览器拦截（Failed to fetch）。本项目 Worker 匿名、无 cookie 依赖，显式关闭即可
-                .withUrl(workerHubUrl, { withCredentials: false })
-                .withAutomaticReconnect()
-                .build();
-
-            workerConnection.on("ReceiveLog", ({ taskId, message, stepName, timestamp }) => {
-                if (taskId !== currentTaskId) return;
-                const p = previews.fill;
-                const div = document.createElement('div');
-                div.className = 'log-entry';
-                const stepTag = stepName ? `<span class="step-tag">[${stepName}]</span> ` : '';
-                div.innerHTML = `<span class="timestamp">[${new Date(timestamp).toLocaleTimeString()}]</span> ${stepTag}${escapeHtml(message)}`;  // #7：message 转义
-                p.logs.appendChild(div);
-                p.logs.scrollTop = p.logs.scrollHeight;
-            });
-
-            workerConnection.on("ReceiveScreenshot", ({ taskId, image }) => {
-                if (taskId !== currentTaskId) return;
-                previews.fill.screenshot.src = `data:image/png;base64,${image}`;
-            });
-
-            workerConnection.on("TaskCompleted", ({ taskId, result, resultData, screenshot, errorMessage, failureType }) => {
-                if (taskId !== currentTaskId) return;
-                handleFillCompleted(result, resultData, screenshot, errorMessage, failureType);
-                workerConnection?.stop();
-            });
-
-            workerConnection.on("TaskStopped", ({ taskId }) => {
-                if (taskId !== currentTaskId) return;
-                addLog('任务已被停止', 'fill');
-                // P3-8：停止→idle/已停止，buttonMode=retry（恢复"开始执行填报"，对话数据保留可微调后重试）
-                finalizeFillState({ status: 'idle', statusText: '已停止', chatStatusText: '已停止', buttonMode: 'retry' });
-                workerConnection?.stop();
-            });
-
-            // R1-10：重连反馈——withAutomaticReconnect 下静默自动重连（默认最长 42s）变可见。
-            // onclose 不动（仅在重连彻底失败后触发，"连接中断"语义仍正确）；currentTaskId 不清（残留下次覆盖无害）
-            let reconnectAttempt = 0;
-            workerConnection.onreconnecting((error) => {
-                if (currentTaskId && currentTab === 'fill') {
-                    reconnectAttempt++;
-                    setStatus('running', `正在重连…第 ${reconnectAttempt} 次`, 'fill');
-                    addLog(`与 Worker 连接断开，正在重连（第 ${reconnectAttempt} 次）…`, 'fill');
-                }
-            });
-            workerConnection.onreconnected((connectionId) => {
-                if (currentTaskId && currentTab === 'fill') {
-                    reconnectAttempt = 0;
-                    setStatus('running', '已重连', 'fill');
-                    addLog('与 Worker 重新连接成功', 'fill');
-                }
-            });
-
-            workerConnection.onclose((error) => {
-                if (currentTaskId && currentTab === 'fill') {
-                    const stopBtn = previews.fill.stopBtn;
-                    // P3-8：保留守卫——正常完成 finalizeFillState 先隐藏 stopBtn 再 stop()，onclose 守卫 false 不误报
-                    if (!stopBtn.classList.contains('hidden')) {
-                        addLog('与 Worker 的连接断开（Worker 可能崩溃或网络中断）。请尝试刷新页面或返回重试', 'fill');
-                        finalizeFillState({ status: 'failed', statusText: '连接中断', chatStatusText: '连接中断', buttonMode: 'retry' });
-                    }
-                }
-            });
-
-            await workerConnection.start();
-            await workerConnection.invoke("JoinTask", currentTaskId);
-            addLog(`已连接到 Worker 实时通信`, 'fill');
-        } else {
-            // #46：Worker 未返回实时通信地址（workerHubUrl 必非空，此分支理论不可达）；显式报错而非静默 fallback 到残缺路径（无 resultData 的 App Hub 兜底）
-            setStatus('failed', '无法接收填报进度', 'fill');
-            addLog('Worker 未返回实时通信地址，无法接收填报进度。请检查 Worker 配置或刷新重试', 'fill');
-            return;
-        }
+        // 协议剥离后填报进度经 App AgentHub 推送（type=fill），前端 appConnection handler 已加 type 分发；不再连接 Worker Hub
+        addLog('已连接到服务器，接收填报进度', 'fill');
 
         previews.fill.stopBtn.classList.remove('hidden');
     } catch (e) {
         addLog('启动失败: ' + e.message, 'fill');
-        if (workerConnection) { try { await workerConnection.stop(); } catch { } }
-        // 与 onclose（连接中断）/ handleFillCompleted（执行失败）同构：启动层失败也走公共收尾，
-        // 恢复"开始执行填报"按钮(buttonMode:'retry')+ 状态文字 + 返回按钮 + 隐藏 stopBtn，避免只能刷新恢复。
+        // 启动层失败走公共收尾（恢复"开始执行填报"按钮 + 状态文字 + 返回按钮 + 隐藏 stopBtn，避免只能刷新恢复）
         finalizeFillState({ status: 'failed', statusText: '启动失败', chatStatusText: '启动失败', buttonMode: 'retry' });
     }
 }
@@ -813,7 +744,9 @@ function handleFillCompleted(result, resultData, screenshot, errorMessage, failu
         addLog(`填报失败${tag}: ${reason}`, 'fill');
         finalizeFillState({ status: 'failed', statusText: '执行失败', chatStatusText: '填报失败', buttonMode: 'retry' });
     }
-    if (screenshot) addLog(`<img src="data:image/png;base64,${screenshot}" style="max-width:100%;border-radius:8px;margin-top:4px;" />`, 'fill', true);  // #7 TD-1：raw=true 跳过转义（截图故意传 <img>）
+    if (screenshot) {
+        previews.fill.screenshot.src = `data:image/png;base64,${screenshot}`;  // 仅更新实时截图区
+    }
 }
 
 // 填报成功：将"开始执行填报/填报中..."按钮变为"📝 填写新单据"（对齐 v1，避免完成后按钮卡在"填报中..."）
@@ -834,6 +767,34 @@ function restoreExecButton() {
             btn.disabled = false;
             btn.textContent = '开始执行填报';
         }
+    });
+}
+
+// ========== SignalR 连接保障 ==========
+async function ensureSignalRConnection(timeoutMs = 5000) {
+    if (appConnection.state === signalR.HubConnectionState.Connected) return;
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error('连接恢复超时'));
+        }, timeoutMs);
+
+        const onReconnected = () => { clearTimeout(timer); resolve(); };
+        const onClose = () => { clearTimeout(timer); reject(new Error('连接已关闭')); };
+
+        appConnection.onreconnected(onReconnected);
+        appConnection.onclose(onClose);
+
+        if (appConnection.state === signalR.HubConnectionState.Disconnected) {
+            appConnection.start().then(() => {
+                clearTimeout(timer);
+                resolve();
+            }).catch(err => {
+                clearTimeout(timer);
+                reject(err);
+            });
+        }
+        // Reconnecting 时等自动重连，上面已挂 onreconnected
     });
 }
 

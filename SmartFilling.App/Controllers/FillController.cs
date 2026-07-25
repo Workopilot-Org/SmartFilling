@@ -8,6 +8,10 @@ using System.ClientModel;
 using SmartFilling.App.Models;
 using SmartFilling.App.Prompts;
 using SmartFilling.App.Services;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Options;
+using SmartFilling.App.Configuration;
+using SmartFilling.App.Hubs;
 using SmartFilling.Engine.Models;
 
 namespace SmartFilling.App.Controllers;
@@ -23,6 +27,9 @@ public class FillController : ControllerBase
     private readonly IConfiguration _config;
     private readonly IWebHostEnvironment _env;
     private readonly ILogger<FillController> _logger;
+    private readonly IHubContext<AgentHub> _hub;                  // C7：接收 Worker push 回调后推 AgentHub
+    private readonly ActiveTaskRegistry _activeTaskRegistry;      // P2：活跃任务登记/移除（健康检测用）
+    private readonly WorkerOptions _workerOptions;                // HealthCheck.Enabled 判断（模式 C）
 
     private static readonly ConcurrentDictionary<string, List<ChatMessage>> _chatSessions = new();
     private static readonly ConcurrentDictionary<string, DateTime> _sessionLastAccess = new();
@@ -45,7 +52,7 @@ public class FillController : ControllerBase
     {
         if (_cleanupInitialized) return;
         _cleanupInitialized = true;
-        _expirationMinutes = _config.GetValue<int>("ChatSession:ExpirationMinutes", 60);
+        _expirationMinutes = _config.GetValue<int>("AppOptions:ChatSessionExpirationMinutes", 60);
         _cleanupTimer.Change(TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5));
     }
 
@@ -56,7 +63,10 @@ public class FillController : ControllerBase
         AttachmentService attachmentService,
         IConfiguration config,
         IWebHostEnvironment env,
-        ILogger<FillController> logger)
+        ILogger<FillController> logger,
+        IHubContext<AgentHub> hub,
+        ActiveTaskRegistry activeTaskRegistry,
+        IOptions<WorkerOptions> workerOptions)
     {
         _scriptService = scriptService;
         _workerClient = workerClient;
@@ -65,6 +75,9 @@ public class FillController : ControllerBase
         _config = config;
         _env = env;
         _logger = logger;
+        _hub = hub;
+        _activeTaskRegistry = activeTaskRegistry;
+        _workerOptions = workerOptions.Value;
         EnsureCleanupTimer();
     }
 
@@ -411,22 +424,43 @@ public class FillController : ControllerBase
                 kv => kv.Key,
                 kv => (object)SmartFilling.Engine.Engine.VariableHelper.NormalizeJsonElement(kv.Value)) ?? new Dictionary<string, object>();
 
+            // C5：App 生成 taskId（Worker 不自生成，决策11-A），对齐录制 RecordController 生成模式
+            var taskId = Guid.NewGuid().ToString("N")[..8];
+
             var attachmentBaseUrl = $"{Request.Scheme}://{Request.Host}";
+            // C7/F1-2：构造 callbackUrl 传 WorkerApiClient（push 模式需 callbackUrl 非空 + Worker 配置 push=true）
+            var progressCallbackUrl = $"{Request.Scheme}://{Request.Host}/api/fill/progress/{taskId}";
+            var completeCallbackUrl = $"{Request.Scheme}://{Request.Host}/api/fill/complete/{taskId}";
+
             var result = await _workerClient.StartFillAsync(
+                taskId,
                 request.DocumentTypeId,
                 request.DocumentTypeName ?? "",
-                scripts, fillData, attachmentBaseUrl);
+                scripts, fillData,
+                progressCallbackUrl,
+                completeCallbackUrl,
+                attachmentBaseUrl);
 
             if (result == null)
                 return StatusCode(502, new { error = "Worker 不可用" });
 
-            return Ok(new { taskId = result.TaskId, workerHubUrl = result.WorkerHubUrl });
+            // P2：提交后登记活跃任务（进度推送回调验证用，与 HealthCheck 分离——HealthCheck 仅控制是否开启健康检测扫描）
+            _activeTaskRegistry.Register(taskId);
+
+            // F1-3/G2-4/L4：返 {taskId}（用本地生成的 taskId，非 result.TaskId；去 workerHubUrl）
+            return Ok(new { taskId });
         }
-        // ④-4：Worker 校验失败（400）透传到前端（前端 app.js 已能读 errData.error），须在 catch(Exception) 之前匹配
+        // ④-4：Worker 校验失败（400）透传到前端
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.BadRequest)
         {
             _logger.LogWarning("Worker 拒绝脚本（校验失败）: {Message}", ex.Message);
             return BadRequest(new { error = ex.Message });
+        }
+        // B11/C12：Worker 503 透传（退避重试耗尽后，须在 catch(Exception) 之前匹配）
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
+        {
+            _logger.LogWarning("Worker 503 透传: {Message}", ex.Message);
+            return StatusCode(503, new { error = ex.Message });
         }
         catch (Exception ex)
         {
@@ -442,6 +476,35 @@ public class FillController : ControllerBase
         return Ok(new { message = "已发送停止请求" });
     }
 
+    // C7/P2：接收 Worker 进度 push 回调 -> 推 AgentHub（type=fill）-> 前端按 type 分发
+    [HttpPost("progress/{taskId}")]
+    public async Task<IActionResult> ReceiveProgress(string taskId, [FromBody] ProgressCallbackPayload payload)
+    {
+        if (payload == null) return BadRequest(new { error = "空 payload" });
+        if (!_activeTaskRegistry.Exists(taskId))
+            return NotFound(new { error = "任务不存在" });
+
+        if (!string.IsNullOrEmpty(payload.Message))
+            await _hub.SendLog(taskId, payload.Message, payload.StepName, type: "fill");
+        if (!string.IsNullOrEmpty(payload.Screenshot))
+            await _hub.SendScreenshot(taskId, payload.Screenshot, type: "fill");
+        return Ok();
+    }
+
+    // C7/P2：接收 Worker 终态 push 回调 -> 先推 AgentHub（L2 先推后清防丢失）-> Unregister
+    [HttpPost("complete/{taskId}")]
+    public async Task<IActionResult> ReceiveComplete(string taskId, [FromBody] CompleteCallbackPayload payload)
+    {
+        if (payload == null) return BadRequest(new { error = "空 payload" });
+
+        // L2：先推前端，成功后再 Unregister（防 push 失败时任务已移除致前端收不到通知）
+        await _hub.TaskCompleted(taskId, payload.Result, errorMessage: payload.ErrorMessage,
+            resultData: payload.ResultData, stats: payload.Stats, failureType: payload.FailureType,
+            screenshot: payload.Screenshot, type: "fill");
+        _activeTaskRegistry.Unregister(taskId);
+        return Ok();
+    }
+
     private static T[]? ParseOptionalArray<T>(Dictionary<string, JsonElement> args, string key)
     {
         if (!args.TryGetValue(key, out var el) || el.ValueKind != JsonValueKind.Array) return null;
@@ -454,4 +517,23 @@ public class StartFillRequest
     public string DocumentTypeId { get; set; } = "";
     public string? DocumentTypeName { get; set; }
     public Dictionary<string, JsonElement>? FillData { get; set; }
+}
+
+/// <summary>Worker 进度 push 回调 payload（HttpProgressReporter.PostProgressAsync 发出，字段名 camelCase 经 JSON 序列化）。</summary>
+public class ProgressCallbackPayload
+{
+    public string? Message { get; set; }
+    public string? StepName { get; set; }
+    public string? Screenshot { get; set; }  // base64
+}
+
+/// <summary>Worker 终态 push 回调 payload（HttpTaskCompletionHandler.PostTerminalAsync 发出，对齐 ScriptResult + 截图）。</summary>
+public class CompleteCallbackPayload
+{
+    public string Result { get; set; } = "";  // "Success" | "Stopped" | "Failed"
+    public Dictionary<string, object>? ResultData { get; set; }
+    public object? Stats { get; set; }
+    public string? ErrorMessage { get; set; }
+    public string? FailureType { get; set; }
+    public string? Screenshot { get; set; }  // base64 终态截图
 }

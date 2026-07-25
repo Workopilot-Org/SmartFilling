@@ -20,6 +20,13 @@ public class ScriptEngine
     private readonly AiActionExecutor? _aiActionExecutor;
     private readonly ITaskProgressReporter? _progressReporter;
 
+    /// <summary>
+    /// P1（第8轮决策落实）：主执行循环每步触发（覆盖 sequential phase / loop phase / ai phase 全路径），
+    /// 供 Worker 侧 ScriptEngineRunner 订阅后调 TaskActivityTracker.Touch 更新 lastActivity（/health?taskId=xxx 健康检测用）。
+    /// Engine 只暴露事件、不依赖 Worker 的 TaskActivityTracker（保持平台无关）；string? 与 ExecuteAsync(taskId) 签名一致避免 CS8604。
+    /// </summary>
+    public event Action<string?>? StepActivity;
+
     public ScriptEngine(ILogger logger, EngineOptions options, Services.CaptchaService? captchaService = null)
     {
         _logger = logger;
@@ -284,7 +291,9 @@ public class ScriptEngine
             StepResult? result;
             try
             {
+                StepActivity?.Invoke(ctx.TaskId);  // P1：步骤执行前触发（健康检测 lastActivity 更新）
                 result = await ExecuteStepWithRetryAndFallbackAsync(ctx, script, phase, phaseIdx, step, j, fillData);
+                StepActivity?.Invoke(ctx.TaskId);  // P1：步骤执行后触发
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -490,7 +499,9 @@ public class ScriptEngine
                 StepResult? result;
                 try
                 {
+                    StepActivity?.Invoke(ctx.TaskId);  // P1：loop phase 步骤执行前触发
                     result = await ExecuteStepWithRetryAndFallbackAsync(ctx, script, phase, phaseIdx, step, j, fillData);
+                    StepActivity?.Invoke(ctx.TaskId);  // P1：loop phase 步骤执行后触发
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -581,9 +592,11 @@ public class ScriptEngine
                                 if (seOnError is "ai-fallback-stop" or "ai-fallback-skip")
                                 {
                                     StepResult? seAi = null;
+                                    StepActivity?.Invoke(ctx.TaskId);  // D1：AI 兜底执行前触发（防长 AI fallback 误判卡死，G1-11 覆盖 AI fallback 路径）
                                     try { seAi = await AiFallbackAsync(ctx, script, phase, phaseIdx, step, fillData, new InvalidOperationException(seMsg), seOnError); }
                                     catch (OperationCanceledException) { throw; }
                                     catch { seAi = null; }
+                                    StepActivity?.Invoke(ctx.TaskId);  // D1：AI 兜底执行后触发
                                     if (seAi != null) break;  // AI 成功，继续下一 step
                                     if (seOnError == "ai-fallback-skip") break;  // skip 继续
                                     if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
@@ -689,10 +702,12 @@ public class ScriptEngine
         var maxTurns = phase.MaxAiTurns ?? script.Settings?.MaxAiTurns ?? _options.MaxAiTurns;
         var totalTimeout = phase.Timeout ?? _options.MaxScriptDuration;
 
+        StepActivity?.Invoke(ctx.TaskId);  // P1：ai phase 执行前触发（ai phase 整体作为一步，覆盖 AI action 多轮）
         var aiResult = await _aiActionExecutor.ExecuteAsync(
             ctx.ActivePage, ctx, instruction, phase.Iframe, script,
             maxTurns, totalTimeout, ctx.Vars, ctx.ScopeChain,
             AiScene.AiPhase, ct: ctx.Ct);
+        StepActivity?.Invoke(ctx.TaskId);  // P1：ai phase 执行后触发
 
         // 累积 AI 统计
         ctx.AiSteps++;
@@ -773,9 +788,11 @@ public class ScriptEngine
                     if (seOnError is "ai-fallback-stop" or "ai-fallback-skip")
                     {
                         StepResult? seAi = null;
+                        StepActivity?.Invoke(ctx.TaskId);  // D1：AI 兜底执行前触发（防长 AI fallback 误判卡死，G1-11 覆盖 AI fallback 路径）
                         try { seAi = await AiFallbackAsync(ctx, script, phase, phaseIdx, cf.Step, fillData, new InvalidOperationException(seMsg), seOnError); }
                         catch (OperationCanceledException) { throw; }
                         catch { seAi = null; }
+                        StepActivity?.Invoke(ctx.TaskId);  // D1：AI 兜底执行后触发
                         if (seAi != null) return null;  // AI 成功，继续下一 step
                         if (seOnError == "ai-fallback-skip") return null;  // skip 继续
                         return new PhaseResult(false) { FailedStepIndex = stepIdx, Message = seMsg };
@@ -978,6 +995,8 @@ public class ScriptEngine
                     var desc = Truncate(step.Description, 60);
                     _logger.LogWarning($"step 重试 | phase={phase.Name} step={stepIdx}{(string.IsNullOrEmpty(desc) ? "" : " description=" + desc)} action={step.Action} retry={r}/{retryCount} 错误={ex.Message}");
                     await Task.Delay(retryInterval, ctx.Ct);
+                    if (_progressReporter != null)
+                        await _progressReporter.SendLogAsync($"⚠️ [phase {phase.Name}] [step {step.Name ?? step.Action}] description={step.Description} 重试 ({r + 1}/{retryCount}): {ex.Message}");
                 }
             }
         }
@@ -1038,6 +1057,7 @@ public class ScriptEngine
             }
             else
             {
+                _ = _progressReporter?.SendLogAsync($"❌ [phase {phase.Name}] [step {step.Name ?? step.Action}] description={step.Description} 失败: {lastError?.Message}");
                 var aiResult = await AiFallbackAsync(ctx, script, phase, phaseIdx, step, fillData, lastError ?? new InvalidOperationException($"step 失败: {step.Action}"), onError);
                 // #2 silent-success 修复：step AI 兜底失败的处理。
                 // - ai-fallback-stop + AI 兜底失败 → throw 传播到 ExecutePhaseAsync/ExecuteLoopPhaseAsync catch → PhaseResult(false) → 主循环 scriptFailed=true → status=failed。
@@ -1108,7 +1128,7 @@ public class ScriptEngine
         _logger.LogError($"step 失败 | phase={phase.Name} step={stepIdx}{(string.IsNullOrEmpty(failDesc) ? "" : " description=" + failDesc)} action={step.Action} selector={step.Selector}\n" +
             $"\t输入: {(string.IsNullOrEmpty(failFields) ? "(无)" : failFields)} | 错误: {lastError?.Message} | 策略: onError={onError}\n" +
             $"\t耗时: {stepSw.ElapsedMilliseconds}ms");
-        _ = _progressReporter?.SendLogAsync($"❌ step 失败: {step.Name ?? step.Action} {lastError?.Message}");  // #5：步骤失败推前端（fire-and-forget 不阻塞 throw）
+        _ = _progressReporter?.SendLogAsync($"❌ [phase {phase.Name}] [step {step.Name ?? step.Action}] description={step.Description} 失败: {lastError?.Message}");  // #5：步骤失败推前端（fire-and-forget 不阻塞 throw）
         throw lastError!;
     }
 
@@ -1230,6 +1250,7 @@ public class ScriptEngine
         _logger.LogInformation($"AI 兜底启动 | phase={phase.Name} 目标={phase.AiGoal ?? phase.Name}\n" +
             $"\t上下文: {completedInPhase}步已完成, {remainingInPhase}步剩余, 可用字段=[{string.Join(", ", fieldNames)}]");
 
+        _ = _progressReporter?.SendLogAsync($"🔄 [phase {phase.Name}] [step {step.Name ?? step.Action}] description={step.Description} {onError} 启动");
         // #3 A/B：step fallback instruction 改 JSON 节点（failedStep 脱敏 + error + 可用数据 + 字段元数据 + storeAs）。
         // 边界护栏/越界约束移到 StepFallbackAddition（system 级，#3 D），instruction 仅留任务数据（payload JSON）。
         var availableData = BuildMaskedAllData(ctx, script);
@@ -1319,6 +1340,7 @@ public class ScriptEngine
         var totalTimeout = phase.Timeout ?? _options.DefaultAiTimeout;  // J.3.3：phase 级 fallback 超时用 DefaultAiTimeout（phase.Timeout 可能不足）
 
         _logger.LogInformation($"Phase AI 兜底启动 | phase={phase.Name} 目标={phaseGoal}");
+        _ = _progressReporter?.SendLogAsync($"🔄 [phase {phase.Name}] Phase AI 兜底启动");
 
         // 构建字段元数据（使用自动提取，P3-1 替代 phase.RelevantFields）
         var relevantFieldNames = ExtractFieldNamesFromPhaseRecursive(phase);
@@ -1544,7 +1566,7 @@ public class ScriptEngine
         var name = string.IsNullOrEmpty(step.Name) ? step.Action : step.Name;
         var parts = new List<string> { $"[phase {ctx.PhaseName}] [step {name}]" };
         // description 字段紧跟步骤名后（所有 action 含 ai；ai 不再在 BuildStepFieldSummary 重复加，见改动 2）
-        if (!string.IsNullOrEmpty(step.Description)) parts.Add($"description={Truncate(step.Description, 60)}");
+        if (!string.IsNullOrEmpty(step.Description)) parts.Add($"description={step.Description}");
         parts.Add($"action={step.Action}");
         if (step.Selector != null) parts.Add($"selector={step.Selector}");
         var summary = BuildStepFieldSummary(step, ctx);
@@ -1634,7 +1656,7 @@ public class ScriptEngine
         return value ?? "";
     }
 
-    /// <summary>P3-1：最终截图（OnTaskComplete/OnTaskFailure 时机）。完成事件（成功/失败/停止）移交 completionHandler（TaskExecutionService.finally 的 OnTaskCompleted）按 task 实际状态单一出口发出，本方法不再发 SendTaskCompletedAsync/SendTaskStoppedAsync。</summary>
+    /// <summary>P3-1：最终截图（OnTaskComplete/OnTaskFailure 时机）。完成事件（成功/失败/停止）移交 completionHandler（TaskExecutionService.finally 的 OnTaskCompleted）按 task 实际状态单一出口发出，本方法不再发 SendTaskCompletedAsync（完成事件由 completionHandler 发）。</summary>
     async Task ReportFinalScreenshotAsync(ExecutionContext ctx, bool success)
     {
         if (_progressReporter == null) return;

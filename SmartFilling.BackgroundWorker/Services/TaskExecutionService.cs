@@ -9,6 +9,7 @@ public class TaskExecutionService
     private readonly TaskConcurrencyManager _concurrencyManager;
     private readonly ITaskCompletionHandler _completionHandler;
     private readonly TaskOrchestrationService _orchestrationService;
+    private readonly TaskActivityTracker _activityTracker;
     private readonly ILogger<TaskExecutionService> _logger;
 
     public event Action? TaskCompleted;
@@ -18,12 +19,14 @@ public class TaskExecutionService
         TaskConcurrencyManager concurrencyManager,
         ITaskCompletionHandler completionHandler,
         TaskOrchestrationService orchestrationService,
+        TaskActivityTracker activityTracker,
         ILogger<TaskExecutionService> logger)
     {
         _runnerFactory = runnerFactory;
         _concurrencyManager = concurrencyManager;
         _completionHandler = completionHandler;
         _orchestrationService = orchestrationService;
+        _activityTracker = activityTracker;
         _logger = logger;
     }
 
@@ -35,6 +38,9 @@ public class TaskExecutionService
             _logger.LogWarning("任务启动失败，并发槽位已满: {TaskId}", task.TaskId);
             return false;
         }
+
+        // P1（第8轮决策落实）：占槽位=在跑=在追踪（/health?taskId 查询 lastActivity 用；与槽位生命周期绑定）
+        _activityTracker.Register(task.TaskId, DateTime.UtcNow);
 
         _logger.LogInformation("任务开始执行: {TaskId}, 当前并发: {Current}/{Max}",
             task.TaskId, _concurrencyManager.RunningTaskCount, _concurrencyManager.MaxConcurrentTasks);
@@ -66,6 +72,8 @@ public class TaskExecutionService
 
                 try { await _completionHandler.OnTaskCompleted(task); }
                 catch (Exception ex) { _logger.LogError(ex, "任务完成上报失败: {TaskId}", task.TaskId); }
+
+                _activityTracker.Unregister(task.TaskId);  // P1：终态后移除追踪（completionHandler 后、Release 前，与槽位生命周期绑定）
 
                 _concurrencyManager.Release();
                 TaskCompleted?.Invoke();

@@ -5,7 +5,6 @@ public record EngineOptions
     public bool Headless { get; init; } = true;
     public int SlowMo { get; init; }
     public Viewport? Viewport { get; init; }
-    public bool DebugMode { get; init; }
     public ScreenshotOptions? Screenshot { get; init; }
     public string? BrowserPath { get; init; }
     public int DefaultTimeout { get; init; } = 30000;

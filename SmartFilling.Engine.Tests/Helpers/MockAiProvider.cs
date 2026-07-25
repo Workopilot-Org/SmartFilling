@@ -59,4 +59,7 @@ public class MockAiProvider : IAiProvider
             RawAssistantMessage = null
         });
     }
+
+    /// <summary>ResetBreaker 空实现：mock 无断路器状态，no-op 满足接口契约。</summary>
+    public void ResetBreaker() { }
 }

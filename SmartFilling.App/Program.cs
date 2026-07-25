@@ -56,6 +56,8 @@ builder.Services.AddSingleton<System.Net.Http.HttpClient>(sp =>
 });
 builder.Services.AddSingleton<AttachmentClassificationService>();
 builder.Services.AddSingleton<TaskOrchestrationService>();
+builder.Services.AddSingleton<ActiveTaskRegistry>();  // P2：活跃任务登记（健康检测用，模式 C 始终创建）
+builder.Services.AddHostedService<WorkerHealthCheckService>();  // G1-11/P2：Worker 健康检测后台服务（HealthCheck.Enabled=false 时不扫描）
 
 // IAiProvider 注册（供 RecordingEngine 使用）
 builder.Services.AddSingleton<IAiProvider>(sp =>
@@ -64,7 +66,10 @@ builder.Services.AddSingleton<IAiProvider>(sp =>
     var logger = sp.GetRequiredService<EngineILogger>();
     if (aiOpts == null || string.IsNullOrEmpty(aiOpts.ApiKey))
         throw new InvalidOperationException("AiProvider:ApiKey 未配置");
-    return new OpenAiProvider(new AiOptions { ApiKey = aiOpts.ApiKey, ModelId = aiOpts.ModelId, Endpoint = aiOpts.Endpoint }, logger);
+    return new OpenAiProvider(new AiOptions {
+        ApiKey = aiOpts.ApiKey, ModelId = aiOpts.ModelId, Endpoint = aiOpts.Endpoint,
+        ModelApiErrorOptions = aiOpts.ModelApiErrorOptions
+    }, logger);
 });
 
 // CORS

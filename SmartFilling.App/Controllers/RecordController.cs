@@ -42,8 +42,11 @@ public class RecordController : ControllerBase
         var engineLogger = _sp.GetRequiredService<EngineILogger>();
         var scriptService = _sp.GetRequiredService<ScriptService>();
         var aiProvider = _sp.GetRequiredService<IAiProvider>();
+        // 计划第4部分：传 CaptchaService 给前置脚本（Program.cs 已注册 CaptchaService Singleton）。
+        // 用全限定 SmartFilling.Engine.Services.CaptchaService 规避本控制器 using 列表无 Engine.Services（只有 Engine.Ai/Engine.Models）
+        var captchaService = _sp.GetService<SmartFilling.Engine.Services.CaptchaService>();
 
-        var engine = new RecordingEngine(aiProvider, scriptService, engineLogger, _engineOptions, _appOptions, request.Attachments);  // 批次7-C2：透传 attachments 给录制引擎
+        var engine = new RecordingEngine(aiProvider, scriptService, engineLogger, _engineOptions, _appOptions, captchaService, request.Attachments);  // 批次7-C2：透传 attachments 给录制引擎；计划第4部分透传 captchaService 给前置脚本
 
         // D1（2026-06-30 用户决策）：删除"启动录制时读取已有关联脚本 fields 喂给 AI"逻辑——无设计背书（fields 是录制产物，非输入；
         // 三文档 firsthand 查证：接口表未提读 fields，设计理念相反）。首次录制 fields=null 正常证明非必需，疑 v1→v2 迁移遗留。

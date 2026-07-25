@@ -141,5 +141,7 @@ public class AiInstructionMaskTests
             // 无 ToolCalls → AiActionExecutor 多轮后 Success=false（maxAiTurns=1 → 1 轮退出）
             return Task.FromResult(new AiResponse { Text = "ok", InputTokens = 1, OutputTokens = 1 });
         }
+
+        public void ResetBreaker() { }
     }
 }

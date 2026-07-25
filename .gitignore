@@ -40,3 +40,9 @@ Thumbs.db
 
 # 设计文档独立仓库（不公开，单独 git 管理，见 design-docs/）
 design-docs/
+
+# PlatformAdapter 独立项目（不进 SmartFilling git，将来单独 git init；共享 slnx 不含它，本地 local.slnx 含）
+SmartFilling.PlatformAdapter/
+
+# 本地 IDE 联合视图（共享 slnx 不动，local sln 含 PlatformAdapter 行；团队共享忽略）
+*.local.slnx

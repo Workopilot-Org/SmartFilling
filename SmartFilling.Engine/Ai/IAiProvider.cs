@@ -15,4 +15,10 @@ public interface IAiProvider
         List<ChatMessage> messages,
         List<ChatTool>? tools = null,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// 重置断路器连续失败计数。供总结等"失败不影响主流程"的路径调用，
+    /// 防止 OpenAiProvider（App 端 Singleton）累积触发断路器后阻塞主流程录制。
+    /// </summary>
+    void ResetBreaker();
 }

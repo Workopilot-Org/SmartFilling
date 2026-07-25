@@ -36,13 +36,19 @@ public class TaskRunnerFactory
                 ApiKey = apiKey,
                 ModelId = _configuration["AiProvider:ModelId"] ?? "deepseek-v3.2",
                 Endpoint = _configuration["AiProvider:Endpoint"] ?? "",
-                CircuitBreakerThreshold = _configuration.GetValue("AiProvider:CircuitBreakerThreshold", 5),
+                ModelApiErrorOptions = new ModelApiErrorOptions
+                {
+                    MaxRetryCount = _configuration.GetValue("AiProvider:ModelApiErrorOptions:MaxRetryCount", 2),
+                    RetryBaseInterval = _configuration.GetValue("AiProvider:ModelApiErrorOptions:RetryBaseInterval", 1000),
+                    CircuitBreakerThreshold = _configuration.GetValue("AiProvider:ModelApiErrorOptions:CircuitBreakerThreshold", 5),
+                },
             };
         }
 
         var captchaService = _serviceProvider.GetService<SmartFilling.Engine.Services.CaptchaService>();
         var orchestrationService = _serviceProvider.GetService<TaskOrchestrationService>();
+        var activityTracker = _serviceProvider.GetRequiredService<TaskActivityTracker>();
 
-        return new ScriptEngineRunner(_logger, reporterFactory, _configuration, engineOptions, aiOptions, captchaService, orchestrationService);
+        return new ScriptEngineRunner(_logger, reporterFactory, _configuration, engineOptions, activityTracker, aiOptions, captchaService, orchestrationService);
     }
 }

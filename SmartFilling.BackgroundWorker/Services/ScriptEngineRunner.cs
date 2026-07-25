@@ -18,12 +18,14 @@ public class ScriptEngineRunner
     private readonly EngineOptions _engineOptions;
     private readonly SmartFilling.Engine.Services.CaptchaService? _captchaService;
     private readonly TaskOrchestrationService? _orchestrationService;
+    private readonly TaskActivityTracker _activityTracker;
 
     public ScriptEngineRunner(
         EngineILogger logger,
         IProgressReporterFactory reporterFactory,
         IConfiguration configuration,
         EngineOptions engineOptions,
+        TaskActivityTracker activityTracker,
         AiOptions? aiOptions = null,
         SmartFilling.Engine.Services.CaptchaService? captchaService = null,
         TaskOrchestrationService? orchestrationService = null)
@@ -32,6 +34,7 @@ public class ScriptEngineRunner
         _reporterFactory = reporterFactory;
         _configuration = configuration;
         _engineOptions = engineOptions;
+        _activityTracker = activityTracker;
         _aiOptions = aiOptions;
         _captchaService = captchaService;
         _orchestrationService = orchestrationService;
@@ -42,7 +45,7 @@ public class ScriptEngineRunner
         task.Status = BWTaskStatus.Running;
         task.StartTime = DateTime.Now;
 
-        var reporter = _reporterFactory.CreateForTask(task.TaskId);
+        var reporter = _reporterFactory.CreateForTask(task.TaskId, task.ProgressCallbackUrl);
 
         IPlaywright? playwright = null;
         IBrowser? browser = null;
@@ -86,12 +89,16 @@ public class ScriptEngineRunner
                 engine = new ScriptEngine(_logger, _engineOptions, reporter, _captchaService);
             }
 
+            // P1（第8轮决策落实）：订阅 Engine StepActivity 事件——主执行循环每步触发，调 TaskActivityTracker.Touch 更新最近活动时间
+            // （覆盖确定性步骤 + AI fallback + AI action + AI phase 全路径，供 /health?taskId=xxx 查询，App/PlatformAdapter 健康检测用）
+            engine.StepActivity += tid => { if (!string.IsNullOrEmpty(tid)) _activityTracker.Touch(tid); };
+
             ScriptResult finalResult;
             if (task.Scripts.Count > 1 && _orchestrationService != null)
             {
                 // 多脚本编排：委托 TaskOrchestrationService（vars 自动合并）
                 finalResult = await _orchestrationService.ExecuteAsync(
-                    task.Scripts, task.FillData, engine, page, task.TaskId, ct);
+                    task.Scripts, task.FillData, engine, page, task.TaskId, ct, task.ProgressCallbackUrl);
             }
             else
             {
@@ -106,7 +113,8 @@ public class ScriptEngineRunner
                     task.ReturnData = result.ReturnData;  // P3：失败也回填 returnData（completionHandler 读 task.ReturnData）
                     task.Stats = result.Stats;
                     await reporter.SendLogAsync($"脚本执行失败: {task.ErrorMessage}");
-                    return;  // P3-3：删 SendTaskCompletedAsync（完成事件由 completionHandler 单一出口发）
+                    await reporter.SendTaskCompletedAsync(result);  // 通知 ProgressReport（Types.Completed 控制是否采集/推送）
+                    return;
                 }
             }
 
@@ -118,7 +126,8 @@ public class ScriptEngineRunner
                 task.ReturnData = finalResult.ReturnData;  // P3：失败也回填
                 task.Stats = finalResult.Stats;
                 await reporter.SendLogAsync($"任务执行失败: {task.ErrorMessage}");
-                return;  // P3-3：删 SendTaskCompletedAsync（完成事件由 completionHandler 单一出口发）
+                await reporter.SendTaskCompletedAsync(finalResult);  // 通知 ProgressReport（Types.Completed 控制是否采集/推送）
+                return;
             }
 
             try
@@ -128,14 +137,14 @@ public class ScriptEngineRunner
             }
             catch { }
 
-            // M.2.1：回填 returnData 到 FillTask（WS 模式 WsTaskCompletionHandler 读 task.ReturnData）。
+            // M.2.1：回填 returnData 到 FillTask（HttpTaskCompletionHandler 读 task.ReturnData 写 TaskResultStore + push 回调到 completeCallbackUrl）。
             // returnData 已由 Engine 按脚本顶层 returnData 声明组装进 ScriptResult.ReturnData；删原读 Vars["_billCode"] 死代码（无写入点，returnData 不再走 vars）。
             task.ReturnData = finalResult.ReturnData;
             task.Stats = finalResult.Stats;  // P3-2：回填 stats（completionHandler 发 TaskCompleted 时带）
 
             task.Status = BWTaskStatus.Completed;
             await reporter.SendLogAsync("所有脚本执行完成");
-            // P3-3：删 SendTaskCompletedAsync（完成事件由 completionHandler 单一出口发）
+            await reporter.SendTaskCompletedAsync(finalResult);  // 通知 ProgressReport（Types.Completed 控制是否采集/推送）
         }
         catch (OperationCanceledException)
         {
@@ -143,7 +152,15 @@ public class ScriptEngineRunner
             task.ErrorMessage = "任务被取消";
             task.FailureType = Engine.Models.FailureType.Cancelled;  // #16 决策4
             await reporter.SendLogAsync("任务被取消");
-            // P3-3：删 SendTaskCompletedAsync（完成事件由 completionHandler 单一出口发；task.FailureType=Cancelled → completionHandler 发 TaskStopped 停止语义）
+            await reporter.SendTaskCompletedAsync(new ScriptResult  // 通知 ProgressReport（Types.Completed 控制是否采集/推送）
+            {
+                Success = false,
+                Status = "failed",
+                ErrorMessage = task.ErrorMessage,
+                FailureType = Engine.Models.FailureType.Cancelled,
+                ReturnData = task.ReturnData,
+                Stats = task.Stats
+            });
         }
         catch (Exception ex)
         {
@@ -163,7 +180,15 @@ public class ScriptEngineRunner
             catch { }
 
             await reporter.SendLogAsync($"任务执行失败: {ex.Message}");
-            // P3-3：删 SendTaskCompletedAsync（完成事件由 completionHandler 单一出口发；task.FailureType=Deterministic → completionHandler 发 TaskCompleted 失败语义）
+            await reporter.SendTaskCompletedAsync(new ScriptResult  // 通知 ProgressReport（Types.Completed 控制是否采集/推送）
+            {
+                Success = false,
+                Status = "failed",
+                ErrorMessage = task.ErrorMessage,
+                FailureType = Engine.Models.FailureType.Deterministic,
+                ReturnData = task.ReturnData,
+                Stats = task.Stats
+            });
         }
         finally
         {
