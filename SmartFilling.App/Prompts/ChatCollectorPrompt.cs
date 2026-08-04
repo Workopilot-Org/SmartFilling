@@ -187,5 +187,26 @@ internal static class ChatCollectorPrompt
 
         ## 数据处理提示词
         {data_processing_prompts}
+
+        ## 初始变量（initialVars）收集（组5 三档——与录制端一致）
+
+        脚本声明的初始变量（可变控制变量，可被脚本 storeAs 覆盖，与只读 fillData 分离）：
+        {initialVars_definition}
+
+        收集规则（数据收集提示词驱动）：
+        - **档②**（数据收集提示词详细说明初始参数，如「使用 mode=A, region=east」）：向用户询问对应变量值，变量名参考上方声明清单
+        - **档③**（数据收集提示词只说「使用初始参数」无具体）：请用户说明有哪些初始参数及对应值
+        - **档①**（数据收集提示词没提 initialVars/初始参数）：不收集（即使脚本声明了 initialVars，也不询问）
+
+        返回格式：信息收集完整后，在 JSON 中加 `initialVars` 对象：
+        ```json
+        {
+          "isComplete": true,
+          "data": { "field1": "value1" },
+          "initialVars": { "mode": "A", "region": "east" },
+          "summary": "已为您准备好填报数据：xxx"
+        }
+        ```
+        若不收集初始变量，`initialVars` 省略或为空对象。
         """;
 }

@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-17-nav-screenshot-detect",
   "name": "GT17 导航回退/刷新 + 截图变体 + 剩余 detect",

@@ -70,7 +70,7 @@ public class RecordingActionExecutor
 
     /// <summary>
     /// 决策 D3/F①：把 loop 内多独立 input（明细每行各一框）selector 的行索引参数化为 {{_rowIndex}}，
-    /// 对齐回放 ScriptEngine loop（ctx.Vars["_rowIndex"]=rowIdx+offset，{{_rowIndex}} 经 VariableHelper.ReplaceVars 替换为当前行索引）。
+    /// 对齐回放 ScriptEngine loop（组2 改存储：rowData["_rowIndex"]=rowIdx+offset，{{_rowIndex}} 经 VariableHelper.ReplaceVars 从 scopeChain 命中 rowData 替换为当前行索引；不再写 ctx.Vars，loop 结束随 rowData 移除不残留/不透传）。
     /// 多模式：属性优先（@rowindex/@data-row/@data-index=数字）→ 回退位置（任意 tag[数字]，如 tr[3]）。
     /// 多匹配=歧义（属性行索引多个 / 位置多[数字]=行列分不清）→ ambiguous=true（ExecuteOperateAsync 返 OperateResult(false) → AI 调 request_help 兜底）。
     /// 注：posRe 用 \w+\[\d+\]（覆盖 tr/td 等 tag，不只 tr），以准确识别"多[数字]=行列歧义"（计划 F⑤ test5 tr[1]/td[2] 期望 ambiguous）。
@@ -932,7 +932,7 @@ public class RecordingActionExecutor
         value = ParametrizeValue(action, value, fieldName, recordVarValues);
 
         // 决策 D3/F①：loop phase 内 + AI 传 rowIndexed=true → 多独立 input（明细每行各一框）selector 行索引参数化。
-        // 对齐回放 ScriptEngine loop（ctx.Vars["_rowIndex"]=rowIdx+offset，{{_rowIndex}} 经 ReplaceVars 替换）。
+        // 对齐回放 ScriptEngine loop（组2 改存储：rowData["_rowIndex"]=rowIdx+offset，{{_rowIndex}} 经 ReplaceVars 从 scopeChain 命中 rowData 替换；不写 ctx.Vars）。
         // 多模式：属性优先（@rowindex/@data-row/@data-index）→ 回退位置（tr[N]）；多[数字]=行列分不清 → request_help 兜底（AI 看 OperateResult(false) 调 request_help）。
         if (loopSource != null && RecordingEngine.GetBool(args, "rowIndexed") == true && extractedSelector != null)
         {

@@ -7,6 +7,10 @@
   "required": ["version", "scriptId", "name", "phases"],
   "additionalProperties": false,
   "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema 文件路径，用于编辑器智能提示，运行时忽略"
+    },
     "version": {
       "type": "integer",
       "const": 2,
@@ -16,10 +20,6 @@
       "type": "string",
       "description": "脚本唯一标识",
       "examples": ["hk-sales-invoice-001"]
-    },
-    "documentTypeId": {
-      "type": "string",
-      "description": "关联的单据类型 ID"
     },
     "name": {
       "type": "string",
@@ -47,6 +47,20 @@
       "type": "object",
       "description": "脚本级数据返回映射。key=返回字段名，value=占位符 {{var}}（取运行时 vars，如 extract/ai 的 storeAs 变量）或任意 JSON 字面值。由录制 AI 据任务描述生成；未声明则不返回。",
       "additionalProperties": true
+    },
+    "initialVars": {
+      "type": "array",
+      "description": "组3：本脚本依赖的外部变量声明（调用方 InitialVars + 前序脚本 storeAs 透传）。声明 name 供 ValidatePlaceholders 放行 {{name}}，供编排按 name 过滤注入，供 defaultValue 兜底。与 fields 区别：fields 是表单字段（只读输入），initialVars 是外部可变变量（脚本可 storeAs 覆盖）。",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-zA-Z_]\\w*$", "description": "变量名（合法标识符，必填，不与 ReservedVarNames/SystemCredentialKeys/fields name 冲突）" },
+          "description": { "type": "string", "description": "描述（可选，文档化用途）" },
+          "defaultValue": { "description": "默认值（可选，任意 JSON 字面值，透传值为空时兜底）。优先级：透传值 > 前序 storeAs > defaultValue" }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      }
     }
   },
 
@@ -67,12 +81,14 @@
         "maxPhaseGotoCount": { "type": "integer", "description": "同一 gotoKey 反复跳转上限（per-gotoKey 局部死循环保护，脚本级可覆盖）" },
         "maxPhaseJumpCount": { "type": "integer", "description": "脚本级 goto toPhase 全局累计上限（不按 phase 重置，专防跨 phase 流浪；区别于 maxPhaseGotoCount）" },
         "rerun": { "$ref": "#/$defs/rerunOptions", "description": "重跑(rerun)配置：row_rerun/phase_rerun 的次数与间隔（脚本级可覆盖）" },
+        "stepIntervalMs": { "type": "integer", "description": "步骤间固定等待(ms)：每个 step 完成后、下一步开始前等待。0或负数=不等待。适用范围：改变状态类 action（fill/click/navigate/ai 等）后等待；wait/check/extract/screenshot/goto 跳过（不改变页面状态）；evaluate 参与。脚本级覆盖引擎默认", "default": 0 },
         "screenshot": {
           "type": "object",
           "description": "脚本级截图配置（覆盖引擎默认值）",
           "additionalProperties": false,
           "properties": {
-            "actionDefaultFolder": { "type": "string", "description": "screenshot action 默认保存目录" }
+            "actionDefaultFolder": { "type": "string", "description": "screenshot action 默认保存目录" },
+            "compressQuality": { "type": "integer", "minimum": 1, "maximum": 100, "description": "JPEG 压缩质量 1-100（默认 70，验证码识别用 100）" }
           }
         }
       }

@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-07-iframe-nested",
   "name": "GT07 嵌套 iframe 操作",

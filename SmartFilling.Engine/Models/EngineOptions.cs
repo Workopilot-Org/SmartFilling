@@ -4,6 +4,9 @@ public record EngineOptions
 {
     public bool Headless { get; init; } = true;
     public int SlowMo { get; init; }
+    /// <summary>步骤间固定等待(ms)：每个 step 完成后、下一步开始前等待此时长，用于避开前端异步刷新/渲染导致的元素状态不稳定。
+    /// 0或负数=不等待（默认 0）。改变状态类 action（fill/click/navigate/ai 等）后等待；读取/检测/等待/控制流类（wait/check/extract/screenshot/goto）不改变页面状态跳过；evaluate 边界保守参与。脚本级 settings.StepIntervalMs 覆盖此值。</summary>
+    public int StepIntervalMs { get; init; } = 0;
     public Viewport? Viewport { get; init; }
     public ScreenshotOptions? Screenshot { get; init; }
     public string? BrowserPath { get; init; }

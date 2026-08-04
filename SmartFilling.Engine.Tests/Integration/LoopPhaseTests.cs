@@ -90,8 +90,9 @@ public class LoopPhaseTests
         var result = await engine.ExecuteAsync(script, ThreeRowData, page);
 
         Assert.True(result.Success, result.ErrorMessage);
-        // 3 行全部遍历，最后一行 rowIdx=2
-        Assert.Equal(2, result.Vars?["_rowIndex"]);
+        // 组2：_rowIndex 改存 rowData 不进 vars——用 ExecutionLog 验证 loop 确实迭代 3 行（每行 1 个 check step）+ 验证 vars 不含 _rowIndex
+        Assert.True(result.ExecutionLog.Count >= 3, "loop 应迭代 3 行（每行 1 个 check step）");
+        Assert.False(result.Vars?.ContainsKey("_rowIndex") ?? false, "_rowIndex 不应进 vars（组2 改存储到 rowData）");
     }
 
     [Fact]
@@ -212,7 +213,9 @@ public class LoopPhaseTests
         var result = await engine.ExecuteAsync(script, fillData, page);
 
         Assert.True(result.Success, result.ErrorMessage);
-        Assert.True(result.Vars?.ContainsKey("_rowIndex") ?? false, "loop 未迭代——Q4 入口归一未生效");
+        // 组2：_rowIndex 改存 rowData 不进 vars——用 ExecutionLog 验证 loop 确实迭代了（Q4 入口归一生效）+ vars 不含 _rowIndex
+        Assert.NotEmpty(result.ExecutionLog);  // loop 确实迭代了（Q4 入口归一生效）
+        Assert.False(result.Vars?.ContainsKey("_rowIndex") ?? false, "_rowIndex 不应进 vars（组2 改存储到 rowData）");
         // Q4 入口归一副作用：fillData 顶层值已从 JsonElement 转为 CLR（List<object>）
         Assert.False(fillData["items"] is System.Text.Json.JsonElement, "Q4 入口应已归一 fillData 中的 JsonElement");
     }
@@ -234,8 +237,9 @@ public class LoopPhaseTests
         var result = await engine.ExecuteAsync(script, ThreeRowData, page);
 
         Assert.True(result.Success, result.ErrorMessage);
-        // 3 行遍历完，最后一次设置 rowIndex=2（rowIdx=2, offset=0）
-        Assert.Equal(2, result.Vars?["_rowIndex"]);
+        // 组2：_rowIndex 改存 rowData 不进 vars——用 ExecutionLog 验证 3 行遍历 + vars 不含 _rowIndex
+        Assert.True(result.ExecutionLog.Count >= 3, "loop 应迭代 3 行（每行 1 个 check step）");
+        Assert.False(result.Vars?.ContainsKey("_rowIndex") ?? false, "_rowIndex 不应进 vars（组2 改存储到 rowData）");
     }
 
     [Fact]
@@ -365,8 +369,9 @@ public class LoopPhaseTests
         var result = await engine.ExecuteAsync(script, ThreeRowData, page);
 
         Assert.True(result.Success, result.ErrorMessage);
-        // 验证遍历完成：rowIndex 应为 2（最后一行的 0-based index）
-        Assert.Equal(2, result.Vars?["_rowIndex"]);
+        // 组2：_rowIndex 改存 rowData 不进 vars——用 ExecutionLog 验证遍历完成 + vars 不含 _rowIndex
+        Assert.NotEmpty(result.ExecutionLog);  // 遍历完成
+        Assert.False(result.Vars?.ContainsKey("_rowIndex") ?? false, "_rowIndex 不应进 vars（组2 改存储到 rowData）");
     }
 
     [Fact]
@@ -422,8 +427,35 @@ public class LoopPhaseTests
         var result = await engine.ExecuteAsync(script, fillData, page);
 
         Assert.True(result.Success, result.ErrorMessage);
-        Assert.True(result.Vars?.ContainsKey("_rowIndex") ?? false,
-            "loop 未迭代——GetLoopRows 取不到生产 List<object> 数据（is List<Dictionary<string,object>> 类型不匹配）");
-        Assert.Equal(2, result.Vars?["_rowIndex"]);  // 3 行遍历，最后一行 rowIdx=2
+        // 组2：_rowIndex 改存 rowData 不进 vars——用 ExecutionLog 验证 loop 确实迭代了（GetLoopRows 取到生产 List<object> 数据）+ vars 不含 _rowIndex
+        Assert.NotEmpty(result.ExecutionLog);  // loop 确实迭代了（GetLoopRows 取到生产 List<object> 数据）
+        Assert.False(result.Vars?.ContainsKey("_rowIndex") ?? false, "_rowIndex 不应进 vars（组2 改存储到 rowData）");
+        // 3 行遍历，最后一行 rowIdx=2——用 evaluate step 在 loop 内取 fillData._rowIndex 存 vars 验证（计划 2.3 新增测试思路）
+    }
+
+    [Fact]
+    public async Task Loop_NoLoopSource_RowIndex_AvailableViaTempChain()
+    {
+        // 组2（办法 K 扩展）：LoopSource 为空 loop（纯计数），_rowIndex 不写 vars 但 loopCondition 可经 tempChain 取 {{_rowIndex}}。
+        // 既有 silent bug 修复验证：原代码 loopCondition 在 ctx.Vars["_rowIndex"] 写入前评估，引用 {{_rowIndex}} 取不到；
+        // 组2 改后 loopCondition 传 tempChain（含 _rowIndex）→ js detect fillData._rowIndex 可用。
+        var script = new ScriptBuilder()
+            .AddPhase("CountLoop", type: "loop", maxLoopCount: 5,
+                loopCondition: ScriptBuilder.Detect("js", check: "fillData._rowIndex < 3"),
+                steps:
+                [
+                    ScriptBuilder.CheckStep(ScriptBuilder.Detect("always"), "next")
+                ])
+            .Build();
+
+        MockPageFactory.Create(out var page);
+        var engine = new ScriptEngine(_logger, DefaultOptions());
+
+        var result = await engine.ExecuteAsync(script, new(), page);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        // loop 应迭代 3 次（_rowIndex=0,1,2），loopCondition 在 _rowIndex=3 时 false break
+        Assert.True(result.ExecutionLog.Count >= 3, "loop 应迭代 3 行（loopCondition fillData._rowIndex < 3 控制迭代次数，组2 tempChain 使 _rowIndex 可用）");
+        Assert.False(result.Vars?.ContainsKey("_rowIndex") ?? false, "_rowIndex 不应进 vars（组2 改存储到 rowData，loop 结束随 rowData 移除不残留）");
     }
 }

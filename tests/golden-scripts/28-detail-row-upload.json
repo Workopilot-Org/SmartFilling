@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-28-detail-row-upload",
   "name": "GT28 明细行逐行上传（F/D3 rowIndexed 回放）",

@@ -388,7 +388,10 @@ internal static class RecordingPrompt
 
         **通用可选字段**：`field`（关联字段名）、`iframe`（iframe selector 链覆盖，常规留空让代码自动提取；仅当代码发 warning 时基于元素属性生成更稳链覆盖）、`storeAs`（存储变量名，string 单变量 或 object 多变量映射，ai action 必须用 object）、`onError`（错误策略）
 
-        > **returnData 提示**（改动5/决策10 多键）：任务描述要求返回的数据（如单号、编号、金额），各自用 `storeAs` 存为变量（如 `extract storeAs=billNo`、`extract storeAs=totalAmount`）；录制结束自动生成脚本顶层 `returnData`（多键，如 `{ "billCode": "{{billNo}}", "amount": "{{totalAmount}}" }`）引用这些变量回传。每个返回数据起贴近业务语义的 key 名。你无需在 operate/save_step 里直接写 returnData。
+        > **returnData 提示**（改动5/决策10 多键 + 组4 三档）：任务描述要求返回的数据（如单号、编号、金额），各自用 `storeAs` 存为变量（如 `extract storeAs=billNo`、`extract storeAs=totalAmount`）；录制结束自动生成脚本顶层 `returnData`（多键，如 `{ "billCode": "{{billNo}}", "amount": "{{totalAmount}}" }`）引用这些变量回传。每个返回数据起贴近业务语义的 key 名。你无需在 operate/save_step 里直接写 returnData。
+        > - 档②（任务描述明确说要返回什么）：自动生成 returnData 多键
+        > - 档③（任务描述只说「返回数据」无具体）：调 `request_help` 问「请说明要返回哪些数据」
+        > - 档①（任务描述没提返回数据）：不生成 returnData
 
         根据 stepType 类型填写对应字段：
         - check：`detect`(条件JSON) + `then`(分支动作)，可选 `message`(失败消息)
@@ -422,7 +425,17 @@ internal static class RecordingPrompt
 
         ## 5. `done` — 录制完成
 
-        所有 phases/steps/fields 在录制时已完整生成，`done` 只标记录制结束（可传 summary 描述脚本用途）。
+        所有 phases/steps/fields 在录制时已完整生成，`done` 标记录制结束，可选传：
+        - **summary**（字符串）：脚本用途描述
+        - **initialVars**（数组，组4 三档）：本脚本依赖的外部变量声明。结构 `[{name, description?, defaultValue?}]`——name=变量名（合法标识符，必填），description=描述（可选），defaultValue=默认值（可选，任意 JSON 字面值，透传为空时兜底）
+          - 档②（任务描述详细说明传入参数，如「传入 mode=A」）：done 传 initialVars 生成声明 + 脚本用 `{{var}}` 引用
+          - 档③（任务描述只说「使用初始参数」无具体）：调 `request_help` 问「请说明有哪些初始参数，名称和用途」
+          - 档①（任务描述没提）：不生成 initialVars
+          - **defaultValue**：任务描述提到默认值（如「默认 mode=A」）-> 声明 defaultValue；没提默认值 -> 不传（可选字段）。优先级：透传值 > 前序 storeAs > defaultValue
+        - **settings**（对象，组4 三档）：脚本级全局配置（覆盖 appsettings 默认）。字段对应 ScriptSettings：`defaultTimeout`/`maxAiTurns`/`maxScriptDuration`/`maxLoopCount`/`maxPhaseGotoCount`/`maxPhaseJumpCount`/`stepIntervalMs`/`onError`/`viewport`/`stepRetry`/`rerun`/`screenshot`
+          - 档②（任务描述详细说明脚本级配置，如「整个脚本最多运行5分钟」-> maxScriptDuration=300000、「AI最多尝试10轮」-> maxAiTurns=10、「步骤间等500毫秒」-> stepIntervalMs=500、「默认超时30秒」-> defaultTimeout=30000）：done 传 settings 对象，代码写入 _script.Settings
+          - 档③（任务描述只说「配置」无具体）：调 `request_help` 问「请说明要配置什么脚本级参数」
+          - 档①（任务描述没提）：不生成 Settings 节点（用默认）
 
         ## 6. `request_help` — 请求用户帮助
 
@@ -582,7 +595,7 @@ internal static class RecordingPrompt
 
         ## 默认省略的字段（任务描述驱动 + 配置兜底）
 
-        `maxAiTurns` / `timeout` / `pollInterval` / `onError` / `retry` / `doubleClick` 等「任务描述驱动 + 配置兜底」类字段，**任务描述未明确要求时一律省略**——回放用 appsettings（EngineOptions）/脚本 settings 默认值。避免录制出 `"maxAiTurns": 30` 这种默认值字段（冗余 + 掩盖真实配置来源）。只有任务描述明确（如「最多尝试 N 次」「超时 N 秒」「每 X 毫秒检查一次」）才传具体值。
+        `maxAiTurns` / `timeout` / `pollInterval` / `onError` / `retry` / `doubleClick` 等「任务描述驱动 + 配置兜底」类字段，**任务描述未明确要求时一律省略**——回放用 appsettings（EngineOptions）/脚本 settings 默认值。避免录制出 `"maxAiTurns": 30` 这种默认值字段（冗余 + 掩盖真实配置来源）。只有任务描述明确（如「最多尝试 N 次」「超时 N 秒」「每 X 毫秒检查一次」）才传具体值。任务描述只说「配置」无具体 -> 调 `request_help` 问「请说明要配置什么」。
 
         **这些字段的落点**（任务描述明确要求时，传给哪/什么结构）：
         - `maxAiTurns`（整数）→ ai action / save_step 的 ai 类型；任务描述「AI 最多 N 轮」时传
@@ -591,6 +604,7 @@ internal static class RecordingPrompt
         - `timeout`（整数 ms）→ 任意步骤；任务描述「超时 N 秒/毫秒」时传
         - `pollInterval`（整数 ms）→ wait；任务描述「每 X 毫秒检查」时传
         - `onError`（stop/skip/ai-fallback-stop/ai-fallback-skip）→ 任意步骤；任务描述「失败跳过/AI 兜底」时传
+        - `stepIntervalMs`（整数 ms）→ **不通过 operate/save_step 传参**。这是**脚本级全局配置**（settings.stepIntervalMs），控制每个 step 完成后、下一步开始前的固定等待（用于避开前端异步刷新）。脚本级覆盖 appsettings（EngineOptions）默认。录制时**一律省略**——需要时由人工在脚本 `settings` 段或 appsettings 配置，不在单步参数体现。适用范围：fill/click/navigate/ai 等改变状态类 action 后等待；wait/check/extract/screenshot/goto 跳过；evaluate 参与
 
         ## ⚠️ 一次录全：禁止「先录主体再补配置」
 

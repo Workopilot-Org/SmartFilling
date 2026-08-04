@@ -68,7 +68,6 @@ public class RecordController : ControllerBase
             try
             {
                 var script = await engine.RecordAsync(
-                    request.DocumentTypeId,
                     request.TaskDescription,
                     request.PrerequisiteScriptId,
                     headless: _engineOptions.Headless,
@@ -166,7 +165,6 @@ public class RecordController : ControllerBase
             return NotFound(new { error = "录制任务不存在或已完成" });
 
         if (!string.IsNullOrEmpty(request.Name)) script = script with { Name = request.Name };
-        if (!string.IsNullOrEmpty(request.DocumentTypeId)) script = script with { DocumentTypeId = request.DocumentTypeId };
 
         var scriptService = _sp.GetRequiredService<ScriptService>();
         try
@@ -180,13 +178,28 @@ public class RecordController : ControllerBase
             return BadRequest(new { validationFailed = true, error = "脚本校验失败", errors = ex.Errors });
         }
 
-        return Ok(new { scriptId = script.ScriptId, saved = true });
+        // DocumentType 关联独立于脚本保存：SaveScript 不再关联（脚本文件不含 DocumentTypeId 字段），
+        // 保存成功后由调用方从请求体 DocumentTypeId 取值调 AssociateScript。失败不阻断保存成功（用户决策 2：返 200 + warning）。
+        string? warning = null;
+        if (!string.IsNullOrEmpty(request.DocumentTypeId))
+        {
+            try
+            {
+                scriptService.AssociateScript(script.ScriptId, request.DocumentTypeId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "单据关联失败: ScriptId={ScriptId}, DocType={DocType}", script.ScriptId, request.DocumentTypeId);
+                warning = "脚本保存成功，但单据关联失败，请手工处理";
+            }
+        }
+
+        return Ok(new { scriptId = script.ScriptId, saved = true, warning });
     }
 }
 
 public class StartRecordRequest
 {
-    public string DocumentTypeId { get; set; } = "";
     public string TaskDescription { get; set; } = "";
     public string? Username { get; set; }
     public string? Password { get; set; }

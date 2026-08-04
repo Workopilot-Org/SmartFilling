@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-24-ai-phase",
   "name": "GT24 AI phase 自主填表（需服务，非确定性）",

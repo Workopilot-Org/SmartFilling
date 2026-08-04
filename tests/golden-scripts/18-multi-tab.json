@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-18-multi-tab",
   "name": "GT18 多标签页：switchTab / closeTab / page_exists",

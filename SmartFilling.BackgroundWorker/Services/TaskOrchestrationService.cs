@@ -69,10 +69,17 @@ public class TaskOrchestrationService
         IPage page,
         string taskId,
         CancellationToken ct,
-        string? progressCallbackUrl = null)  // R2-1：传 callbackUrl 给 CreateForTask（HttpProgressReporter push 用）
+        string? progressCallbackUrl = null,  // R2-1：传 callbackUrl 给 CreateForTask（HttpProgressReporter push 用）
+        Dictionary<string, object>? initialVars = null)  // 组3：调用方传入的可变控制变量（可被脚本 storeAs 覆盖）
     {
         var reporter = _reporterFactory.CreateForTask(taskId, progressCallbackUrl);
+        // 组3 方案B：mergedVars 初始化 = 调用方 initialVars 作底（过滤 ReservedVarNames，防系统变量被污染/遮蔽）。
+        // 前序脚本 storeAs 后写覆盖 mergedVars；每脚本按 script.InitialVars 声明从 mergedVars 取（一源）。
         var mergedVars = new Dictionary<string, object>();
+        if (initialVars != null)
+            foreach (var kv in initialVars)
+                if (!ScriptLoader.ReservedVarNames.Contains(kv.Key))
+                    mergedVars[kv.Key] = kv.Value;
         var allLog = new List<Engine.Logging.StepLog>();
         Dictionary<string, object>? mergedReturnData = null;
         int totalDurationMs = 0;
@@ -86,12 +93,22 @@ public class TaskOrchestrationService
 
             await reporter.SendLogAsync($"开始执行 [{scriptName}] ({i + 1}/{scripts.Count})");
 
-            // 合并上一步的 vars 到 fillData 供下一步使用
+            // 组1：effectiveFillData 只用 fillData（前序 storeAs/调用方 initialVars 改走 initialVars 通道进 ctx.Vars，不塞 effectiveFillData/scopeChain——
+            // 原 mergedVars 塞 effectiveFillData 致后脚本 storeAs 同名被前序透传值遮蔽（scopeChain 优先 > vars），且系统 _ 变量串台）。
             var effectiveFillData = new Dictionary<string, object>(fillData);
-            foreach (var kv in mergedVars)
-                effectiveFillData[kv.Key] = kv.Value;
 
-            var result = await engine.ExecuteAsync(script, effectiveFillData, page, ct, taskId);
+            // 组3 方案B：每脚本按 script.InitialVars 声明从 mergedVars 取（含调用方 initialVars 作底 + 前序 storeAs 覆盖），未声明的不进 ctx.Vars（避免污染 AI availableData）。
+            var declared = script.InitialVars?.Select(v => v.Name).ToHashSet(StringComparer.Ordinal) ?? new HashSet<string>();
+            Dictionary<string, object>? scriptInitialVars = null;
+            if (declared.Count > 0)
+            {
+                scriptInitialVars = new Dictionary<string, object>();
+                foreach (var name in declared)
+                    if (mergedVars.TryGetValue(name, out var mv))
+                        scriptInitialVars[name] = mv;
+            }
+
+            var result = await engine.ExecuteAsync(script, effectiveFillData, page, ct, taskId, scriptInitialVars);
 
             totalDurationMs += result.TotalDurationMs;
             if (result.ExecutionLog != null)
@@ -121,11 +138,13 @@ public class TaskOrchestrationService
                 };
             }
 
-            // 合并本脚本的 vars
+            // 组1：合并本脚本的 vars 到 mergedVars（过滤 ReservedVarNames——系统 _ 变量不跨脚本透传）。
+            // 用 ReservedVarNames 精确过滤（非 _ 前缀），不误伤用户自定义 _ 开头 storeAs。
             if (result.Vars != null)
             {
                 foreach (var kv in result.Vars)
-                    mergedVars[kv.Key] = kv.Value;
+                    if (!ScriptLoader.ReservedVarNames.Contains(kv.Key))
+                        mergedVars[kv.Key] = kv.Value;
             }
 
             await reporter.SendLogAsync($"脚本 [{scriptName}] 执行完成");

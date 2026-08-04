@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-19-captcha-text",
   "name": "GT19 文字验证码（captcha text，半确定性）",

@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-23-ai-action",
   "name": "GT23 AI action 自主点击（需服务，非确定性）",

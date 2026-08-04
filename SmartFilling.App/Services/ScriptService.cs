@@ -63,22 +63,31 @@ public class ScriptService
 
     public DocumentType CreateDocument(string name, string description, string icon)
     {
-        var doc = new DocumentType { Name = name, Description = description, Icon = icon };
-        _documents.Add(doc);
-        SaveDocuments();
-        return doc;
+        lock (_documents)
+        {
+            var doc = new DocumentType { Name = name, Description = description, Icon = icon };
+            _documents.Add(doc);
+            SaveDocuments();
+            return doc;
+        }
     }
 
     public void UpdateDocument(DocumentType doc)
     {
-        var idx = _documents.FindIndex(d => d.Id == doc.Id);
-        if (idx >= 0) { _documents[idx] = doc; SaveDocuments(); }
+        lock (_documents)
+        {
+            var idx = _documents.FindIndex(d => d.Id == doc.Id);
+            if (idx >= 0) { _documents[idx] = doc; SaveDocuments(); }
+        }
     }
 
     public void DeleteDocument(string id)
     {
-        _documents.RemoveAll(d => d.Id == id);
-        SaveDocuments();
+        lock (_documents)
+        {
+            _documents.RemoveAll(d => d.Id == id);
+            SaveDocuments();
+        }
     }
 
     // ===== ScriptV2 CRUD =====
@@ -97,7 +106,7 @@ public class ScriptService
     {
         // #4：写前校验（源头堵残留字段/不合规脚本）。forceSave=false 校验失败→抛 ScriptValidationException（承载错误列表供 Controller 返回前端）；
         // forceSave=true 跳校验（用户确认强制保存缺 aiGoal 等不完整脚本——取消/超时/AI 未回填 aiGoal 的脚本）。
-        // 校验前置于 DocumentType 关联：避免校验失败仍改 documents.json 的脏关联 bug（原校验在关联后，失败时 doc.OrderedScriptIds 已被加入）。
+        // 校验通过后写脚本文件，DocumentType 关联由调用方调用 AssociateScript 处理（SaveScript 不再关联，脚本文件不含 DocumentTypeId 字段）。
         if (!forceSave)
         {
             // 最严检查：业务校验（ValidateAndGetErrors）+ schema 架构校验（ValidateSchemaAndGetErrors）两层。
@@ -111,38 +120,44 @@ public class ScriptService
                 throw new ScriptValidationException(errors);
         }
 
-        // 关联到 DocumentType（校验通过/forceSave 后才关联，需在写入文件之前，确保 DocumentTypeId 已替换为真正的 ID）
-        if (!string.IsNullOrEmpty(script.DocumentTypeId))
-        {
-            // 按 ID 或 Name 查找（用户输入的是名称，如"智工云-登录"）
-            var doc = _documents.FirstOrDefault(d => d.Id == script.DocumentTypeId || d.Name == script.DocumentTypeId);
-            if (doc == null)
-            {
-                // 不存在则自动创建 DocumentType
-                doc = new DocumentType { Name = script.DocumentTypeId, Description = $"自动创建于 {DateTime.Now}" };
-                _documents.Add(doc);
-            }
-            // 将用户输入的文本替换为真正的 doc.Id
-            script = script with { DocumentTypeId = doc.Id };
-            if (!doc.OrderedScriptIds.Contains(script.ScriptId))
-            {
-                doc.OrderedScriptIds.Add(script.ScriptId);
-                SaveDocuments();
-            }
-        }
-
         var path = Path.Combine(_scriptsDir, $"{script.ScriptId}.json");
         File.WriteAllText(path, JsonSerializer.Serialize(script, _jsonOptions));
         return path;
+    }
+
+    /// <summary>
+    /// 关联脚本到 DocumentType（脚本保存成功后由调用方调用）。
+    /// 按 Id || Name 双查（与 GetScriptsByDocument/GetScriptRawTextByDocument 查找逻辑一致），
+    /// 不存在则自动创建。加 lock(_documents) 防 ASP.NET 并发 Save 请求竞态（两请求同查同 doc==null → 重复创建 DocumentType）。
+    /// </summary>
+    public void AssociateScript(string scriptId, string documentTypeId)
+    {
+        lock (_documents)
+        {
+            var doc = _documents.FirstOrDefault(d => d.Id == documentTypeId || d.Name == documentTypeId);
+            if (doc == null)
+            {
+                doc = new DocumentType { Name = documentTypeId, Description = $"自动创建于 {DateTime.Now}" };
+                _documents.Add(doc);
+            }
+            if (!doc.OrderedScriptIds.Contains(scriptId))
+            {
+                doc.OrderedScriptIds.Add(scriptId);
+                SaveDocuments();  // 仅实际变更时写盘（与旧 SaveScript 关联块行为一致）
+            }
+        }
     }
 
     public void DeleteScript(string scriptId)
     {
         var path = Path.Combine(_scriptsDir, $"{scriptId}.json");
         if (File.Exists(path)) File.Delete(path);
-        foreach (var d in _documents)
-            d.OrderedScriptIds.Remove(scriptId);
-        SaveDocuments();
+        lock (_documents)
+        {
+            foreach (var d in _documents)
+                d.OrderedScriptIds.Remove(scriptId);
+            SaveDocuments();
+        }
     }
 
     public List<ScriptV2> GetScriptsByDocument(string documentTypeId)

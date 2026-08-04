@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-16-loop-row-rerun-break",
   "name": "GT16 控制流：loop 内 row_rerun 重跑当前行 + break 退出",

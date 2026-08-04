@@ -61,7 +61,7 @@ public class RecordingEnginePrerequisiteTests
 
         using var cts = new CancellationTokenSource();
         var ex = await Assert.ThrowsAsync<PrerequisiteScriptFailedException>(() =>
-            engine.RecordAsync("test-doc", "任务", "sick-prereq", headless: true, userResponse: null, ct: cts.Token));
+            engine.RecordAsync("任务", "sick-prereq", headless: true, userResponse: null, ct: cts.Token));
         await engine.StopAsync();  // 清理浏览器
         Assert.Contains("带病前置脚本", ex.Message);  // 验值：消息含 script.Name（带病能拿到 name）
         Assert.Contains("校验失败", ex.Message);  // ③ 分支
@@ -79,7 +79,7 @@ public class RecordingEnginePrerequisiteTests
 
         using var cts = new CancellationTokenSource();
         var ex = await Assert.ThrowsAsync<PrerequisiteScriptFailedException>(() =>
-            engine.RecordAsync("test-doc", "任务", "broken-prereq", headless: true, userResponse: null, ct: cts.Token));
+            engine.RecordAsync("任务", "broken-prereq", headless: true, userResponse: null, ct: cts.Token));
         await engine.StopAsync();
         Assert.Contains("broken-prereq", ex.Message);  // 验值：scriptId 兜底（结构坏拿不到 script.Name）
         Assert.Contains("加载失败", ex.Message);  // ② 分支（"加载失败（文件损坏/JSON 格式错误）"）
@@ -101,7 +101,7 @@ public class RecordingEnginePrerequisiteTests
 
         var (engine, _, _, _, onLogMessages) = Create(mockAi);
         using var cts = new CancellationTokenSource();
-        var script = await engine.RecordAsync("test-doc", "任务", "nonexistent-script", headless: true, userResponse: null, ct: cts.Token);
+        var script = await engine.RecordAsync("任务", "nonexistent-script", headless: true, userResponse: null, ct: cts.Token);
         await engine.StopAsync();
         Assert.NotNull(script);  // 不抛 PrerequisiteScriptFailedException，正常返回（前置跳过后录制完成）
         Assert.Contains(onLogMessages, m => m.Contains("不存在") && m.Contains("跳过"));  // 验可观测：OnLog 含"不存在，跳过"
@@ -123,12 +123,11 @@ public class RecordingEnginePrerequisiteTests
         {
             ScriptId = "valid-prereq",
             Name = "合法前置脚本",
-            DocumentTypeId = "test-doc",
             Phases = [new PhaseNode { Kind = "phase", Name = "main", Type = "sequential", AiGoal = "前置目标", Steps = [] }]
         });
 
         using var cts = new CancellationTokenSource();
-        var script = await engine.RecordAsync("test-doc", "任务", "valid-prereq", headless: true, userResponse: null, ct: cts.Token);
+        var script = await engine.RecordAsync("任务", "valid-prereq", headless: true, userResponse: null, ct: cts.Token);
         await engine.StopAsync();
         Assert.NotNull(script);  // 前置 errors 空→执行（空 steps 无操作），不抛 PrerequisiteScriptFailedException
     }
@@ -145,7 +144,7 @@ public class RecordingEnginePrerequisiteTests
 
         using var cts = new CancellationTokenSource();
         var ex = await Assert.ThrowsAsync<PrerequisiteScriptFailedException>(() =>
-            engine.RecordAsync("test-doc", "任务", "unknown-prereq", headless: true, userResponse: null, ct: cts.Token));
+            engine.RecordAsync("任务", "unknown-prereq", headless: true, userResponse: null, ct: cts.Token));
         await engine.StopAsync();
         Assert.Contains("未知字段前置", ex.Message);  // 验值：消息含 script.Name（schema 错也走 ③ 带 script.Name，业务读回成功能拿 name）
         Assert.Contains("校验失败", ex.Message);  // ③ 分支（preErrors.Count>0→throw）

@@ -96,14 +96,25 @@ public class ScriptEngineRunner
             ScriptResult finalResult;
             if (task.Scripts.Count > 1 && _orchestrationService != null)
             {
-                // 多脚本编排：委托 TaskOrchestrationService（vars 自动合并）
+                // 多脚本编排：委托 TaskOrchestrationService（vars 自动合并 + 组3：传 task.InitialVars）
                 finalResult = await _orchestrationService.ExecuteAsync(
-                    task.Scripts, task.FillData, engine, page, task.TaskId, ct, task.ProgressCallbackUrl);
+                    task.Scripts, task.FillData, engine, page, task.TaskId, ct, task.ProgressCallbackUrl,
+                    task.InitialVars);  // 组3 (3.8)：传调用方 InitialVars（已过滤 ReservedVarNames + 归一）
             }
             else
             {
-                // 单脚本直接执行
-                var result = await engine.ExecuteAsync(task.Scripts[0], task.FillData, page, ct, task.TaskId);
+                // 组3 (3.6)：单脚本也按 script.InitialVars 声明过滤（与多脚本 3.7 方案B 同模式，避免未声明 key 进 ctx.Vars 污染 AI availableData）。
+                var singleScript = task.Scripts[0];
+                var declared = singleScript.InitialVars?.Select(v => v.Name).ToHashSet(System.StringComparer.Ordinal) ?? new HashSet<string>();
+                Dictionary<string, object>? scriptInitialVars = null;
+                if (declared.Count > 0 && task.InitialVars != null)
+                {
+                    scriptInitialVars = new Dictionary<string, object>();
+                    foreach (var name in declared)
+                        if (task.InitialVars.TryGetValue(name, out var mv))
+                            scriptInitialVars[name] = mv;
+                }
+                var result = await engine.ExecuteAsync(singleScript, task.FillData, page, ct, task.TaskId, scriptInitialVars);
                 finalResult = result;
                 if (!result.Success)
                 {

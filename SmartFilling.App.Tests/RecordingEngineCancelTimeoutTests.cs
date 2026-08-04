@@ -73,7 +73,7 @@ public class RecordingEngineCancelTimeoutTests
         using var cts = new CancellationTokenSource();
 
         // 启动录制（turn 0 mock 返回 request_help -> ExecuteRequestHelpAsync 阻塞 await tcs.Task）
-        var recordTask = engine.RecordAsync("docType", "任务", null, headless: true, userResponse: null, ct: cts.Token);
+        var recordTask = engine.RecordAsync("任务", null, headless: true, userResponse: null, ct: cts.Token);
 
         // 等 RecordAsync 阻塞在 request_help 的 await 点（mock 同步返回，几 ms 即到，200ms 余量防 CI 慢机器）
         await Task.Delay(200);
@@ -101,7 +101,7 @@ public class RecordingEngineCancelTimeoutTests
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
 
         var ex = await Assert.ThrowsAsync<RecordingCancelledException>(() =>
-            engine.RecordAsync("docType", "任务", null, headless: true, userResponse: null, ct: cts.Token));
+            engine.RecordAsync("任务", null, headless: true, userResponse: null, ct: cts.Token));
         Assert.Equal(RecordingCancelReason.Timeout, ex.Reason);
         Assert.Contains("超时", ex.Message);  // minutes=10（600000/60000），文案"录制超时(10分钟)"
     }
@@ -118,7 +118,7 @@ public class RecordingEngineCancelTimeoutTests
         using var cts = new CancellationTokenSource();
 
         var ex = await Assert.ThrowsAsync<RecordingCancelledException>(() =>
-            engine.RecordAsync("docType", "任务", null, headless: true, userResponse: null, ct: cts.Token));
+            engine.RecordAsync("任务", null, headless: true, userResponse: null, ct: cts.Token));
         Assert.Equal(RecordingCancelReason.MaxTurnsExhausted, ex.Reason);
         Assert.Contains("轮次限制", ex.Message);  // "录制达到最大轮次限制(3轮)"
     }
@@ -137,7 +137,7 @@ public class RecordingEngineCancelTimeoutTests
         var engine = CreateEngine(mockAi, new EngineOptions { MaxScriptDuration = 600000 }, new AppOptions { MaxRecordTurns = 10 });
         using var cts = new CancellationTokenSource();
 
-        var script = await engine.RecordAsync("docType", "任务", null, headless: true, userResponse: null, ct: cts.Token);
+        var script = await engine.RecordAsync("任务", null, headless: true, userResponse: null, ct: cts.Token);
         Assert.NotNull(script);
         Assert.IsType<ScriptV2>(script);  // 正常返回脚本，未抛 RecordingCancelledException
     }
@@ -160,7 +160,7 @@ public class RecordingEngineCancelTimeoutTests
         using var cts = new CancellationTokenSource();
 
         // 启动录制：turn 0,1 纯文本快速空转，turn 2 request_help 阻塞 await tcs.Task
-        var recordTask = engine.RecordAsync("docType", "任务", null, headless: true, userResponse: null, ct: cts.Token);
+        var recordTask = engine.RecordAsync("任务", null, headless: true, userResponse: null, ct: cts.Token);
 
         await Task.Delay(300);  // 等 turn 0,1,2 到 request_help 阻塞
         engine.MarkManualCancel("用户取消录制");
@@ -208,7 +208,6 @@ public class RecordingEngineCancelTimeoutTests
         {
             ScriptId = "prereq-cancel-test",
             Name = "前置取消测试",
-            DocumentTypeId = "test-doc",
             Phases = [new PhaseNode { Kind = "phase", Name = "main", Type = "sequential", AiGoal = "前置测试目标", Steps = [] }]
         });
         var engine = new RecordingEngine(mockAi, scriptService, Substitute.For<EngineILogger>(), engineOptions, appOptions);
@@ -218,7 +217,7 @@ public class RecordingEngineCancelTimeoutTests
         cts.Cancel();  // 预先取消（模拟总超时）
 
         var ex = await Assert.ThrowsAsync<RecordingCancelledException>(() =>
-            engine.RecordAsync("test-doc", "任务", "prereq-cancel-test", headless: true, userResponse: null, ct: cts.Token));
+            engine.RecordAsync("任务", "prereq-cancel-test", headless: true, userResponse: null, ct: cts.Token));
         Assert.Equal(RecordingCancelReason.Timeout, ex.Reason);  // _cancelReason 空=总超时
         Assert.Contains("超时", ex.Message);
         // AI 未被调用（前置脚本取消，未进录制循环）

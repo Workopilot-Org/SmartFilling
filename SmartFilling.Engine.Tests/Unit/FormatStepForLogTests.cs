@@ -282,8 +282,10 @@ public class FormatStepForLogTests
 
         await engine.ExecuteAsync(script, new(), page);
 
+        // 改动6：step 失败推前端"步骤失败"->"失败"（L1131），守护防回退（不使用"步骤"二字）
+        // 日志格式：❌ [phase Main] [step failStep] description= 失败: {msg}
         await reporter.Received().SendLogAsync(
-            Arg.Is<string>(s => s!.Contains("❌") && s.Contains("step 失败") && !s.Contains("步骤")),
+            Arg.Is<string>(s => s!.Contains("❌") && s.Contains("[step") && s.Contains("失败") && !s.Contains("步骤")),
             Arg.Any<string?>());
     }
 }

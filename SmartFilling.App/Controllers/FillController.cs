@@ -103,42 +103,75 @@ public class FillController : ControllerBase
             var fieldsDefinition = "无特定字段定义，请根据通用常识收集必要信息。";
             var scriptName = "未知单据";
             var dataProcessingPromptsList = new List<string>();
+            var initialVarsDefinition = "无";  // 组5 (5.1)：脚本 initialVars 声明的变量名清单，供 AI 收集参考
 
-            if (!string.IsNullOrEmpty(request.ScriptId))
+            if (!string.IsNullOrEmpty(request.DocumentTypeId))
             {
-                var docType = request.ScriptId;
+                var docType = request.DocumentTypeId;
                 var scripts = _scriptService.GetScriptsByDocument(docType);
-                var script = scripts.FirstOrDefault();
 
                 // 脚本加载失败（坏脚本/未关联）→ 返回 400 让前端可见，不再静默降级成"未知单据"
-                if (script == null)
+                if (scripts.Count == 0)
                 {
                     _chatSessions.TryRemove(sessionId, out _);
                     _sessionLastAccess.TryRemove(sessionId, out _);
-                    return BadRequest(new { error = "脚本加载或校验失败，请检查脚本或重新录制" });
+                    return BadRequest(new { error = "未找到关联的脚本，请重新录制" });
                 }
 
-                // v2：使用 ScriptV2.Fields 代替 v1 ExtractedFields
-                // #50 决策T.8：收集层正向白名单——仅 source 为空或 user 的字段交 AI 收集（排除 system 凭据 + computed 计算值；system 由调用方提供，computed 由脚本 storeAs 计算，AI 询问会覆盖正确值）
-                if (script.Fields is { Count: > 0 })
+                // 合并所有脚本字段，按 source 白名单过滤（仅空或 user 交 AI 收集，排除 system 凭据 + computed 计算值）
+                var allFields = scripts
+                    .Where(s => s.Fields != null)
+                    .SelectMany(s => s.Fields!)
+                    .Where(f => string.IsNullOrEmpty(f.Source) || "user".Equals(f.Source, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                // 检测字段名重复（仅判断 Name 是否重复，不比较定义内容；用户决策 3）
+                var duplicateNames = allFields
+                    .GroupBy(f => f.Name)
+                    .Where(g => g.Count() > 1)
+                    .Select(g => g.Key)
+                    .ToList();
+
+                if (duplicateNames.Count > 0 && string.IsNullOrEmpty(request.MergeStrategy))
                 {
-                    var collectableFields = script.Fields
-                        .Where(f => string.IsNullOrEmpty(f.Source) || string.Equals(f.Source, "user", StringComparison.OrdinalIgnoreCase))
-                        .ToList();
-                    if (collectableFields.Count == 0)
-                    {
-                        // 全部字段 source=system（如登录凭据），由前端输入框（HTTP）/WS 任务提供，无需 chat 收集 → 直接开始填报
-                        _chatSessions.TryRemove(sessionId, out _);
-                        _sessionLastAccess.TryRemove(sessionId, out _);
-                        return Ok(new ChatResponse { SessionId = sessionId, IsComplete = true, Reply = "本单据数据均由系统提供（登录凭据等），无需额外信息，可直接开始填报。", CollectedData = new Dictionary<string, object>() });
-                    }
-                    fieldsDefinition = JsonSerializer.Serialize(collectableFields, new JsonSerializerOptions { WriteIndented = true });
+                    // 首次请求发现字段名重复 → 不创建会话，返回冲突信息让用户选「后项覆盖前项」或「取消」
+                    _chatSessions.TryRemove(sessionId, out _);
+                    _sessionLastAccess.TryRemove(sessionId, out _);
+                    return Ok(new { conflict = true, conflictedFields = duplicateNames });
                 }
-                if (!string.IsNullOrEmpty(script.Name))
-                    scriptName = script.Name;
+
+                if (allFields.Count == 0)
+                {
+                    // 全部字段 source=system（如登录凭据），由前端输入框（HTTP）/WS 任务提供，无需 chat 收集 → 直接开始填报
+                    _chatSessions.TryRemove(sessionId, out _);
+                    _sessionLastAccess.TryRemove(sessionId, out _);
+                    return Ok(new ChatResponse { SessionId = sessionId, IsComplete = true, Reply = "本单据数据均由系统提供（登录凭据等），无需额外信息，可直接开始填报。", CollectedData = new Dictionary<string, object>() });
+                }
+
+                // 按合并策略去重：last-wins=末定义覆盖前定义（Reverse 后 DistinctBy 保留最后一个出现的定义）；默认 first-wins
+                IEnumerable<FieldDefinition> mergedFields = "last-wins".Equals(request.MergeStrategy, StringComparison.OrdinalIgnoreCase)
+                    ? allFields.Reverse<FieldDefinition>().DistinctBy(f => f.Name)
+                    : allFields.DistinctBy(f => f.Name);
+                var fieldsList = mergedFields.ToList();
+
+                fieldsDefinition = JsonSerializer.Serialize(fieldsList, new JsonSerializerOptions { WriteIndented = true });
+
+                // 组5 (5.1)：收集所有脚本 initialVars 声明的变量名清单（不作差集，收集触发由数据收集提示词三档决定）。
+                var allInitialVars = new HashSet<string>();
+                foreach (var s in scripts)
+                    if (s.InitialVars != null)
+                        foreach (var v in s.InitialVars)
+                            allInitialVars.Add(v.Name);
+                initialVarsDefinition = allInitialVars.Count > 0
+                    ? JsonSerializer.Serialize(allInitialVars.Select(n => new { name = n }), new JsonSerializerOptions { WriteIndented = true })
+                    : "无";
+
+                // scriptName 用文档名称（多脚本合并后取文档名而非单个脚本名）
+                var document = _scriptService.GetDocument(docType);
+                if (document != null && !string.IsNullOrEmpty(document.Name))
+                    scriptName = document.Name;
 
                 // v2：使用 DocumentType.DataProcessingPrompts
-                var document = _scriptService.GetDocument(docType);
                 if (document != null && !string.IsNullOrEmpty(document.DataProcessingPrompts))
                     dataProcessingPromptsList.Add(document.DataProcessingPrompts);
             }
@@ -154,6 +187,7 @@ public class FillController : ControllerBase
                 .Replace("{current_time}", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
                 .Replace("{fields_definition}", fieldsDefinition)
                 .Replace("{data_processing_prompts}", dataProcessingPrompts)
+                .Replace("{initialVars_definition}", initialVarsDefinition)  // 组5 (5.1)：传 initialVars 声明供 AI 参考
                 .Replace("{script_name}", scriptName);
 
             _chatSessions[sessionId].Add(new SystemChatMessage(systemPrompt));
@@ -327,6 +361,7 @@ public class FillController : ControllerBase
 
                     bool isComplete = false;
                     JsonElement? dataEl = null;
+                    JsonElement? initialVarsEl = null;  // 组5 (5.3)：AI 返回的 initialVars 对象
                     string? summaryStr = null;
 
                     foreach (var prop in root.EnumerateObject())
@@ -337,6 +372,8 @@ public class FillController : ControllerBase
                             summaryStr = prop.Value.GetString();
                         else if (prop.Name.Equals("data", StringComparison.OrdinalIgnoreCase))
                             dataEl = prop.Value;
+                        else if (prop.Name.Equals("initialVars", StringComparison.OrdinalIgnoreCase))  // 组5 (5.3)
+                            initialVarsEl = prop.Value;
                     }
 
                     if (isComplete)
@@ -348,6 +385,8 @@ public class FillController : ControllerBase
 
                         // 决策 D1/方案2：提取为 ParseCollectedData（纯重构，对话行为零改变；逻辑等价，便于集成层单测锁 D1.5 不拍平）。
                         response.CollectedData = ParseCollectedData(dataEl);
+                        // 组5 (5.3)：复用 ParseCollectedData 解析 initialVars（归一+不拍平，D1.5 原则适用）。
+                        response.InitialVars = ParseCollectedData(initialVarsEl);
                     }
                 }
                 catch (Exception ex)
@@ -420,9 +459,10 @@ public class FillController : ControllerBase
             //       与 AttachmentService 遍历不到嵌套附件对象 → 相对 path 不转绝对 URL → 不下载（对象形式附件双重失效）
             // 批次7-D2：附件走 CollectedData[fileField]（对话收集 D1 产附件对象数组），fillData=CollectedData 已含 fileField；
             //          不单独注入 attachments（StartFillRequest 无 Attachments 字段；前端传的 attachments 被忽略冗余）
-            var fillData = request.FillData?.ToDictionary(
-                kv => kv.Key,
-                kv => (object)SmartFilling.Engine.Engine.VariableHelper.NormalizeJsonElement(kv.Value)) ?? new Dictionary<string, object>();
+            // 组3 (3.2)：FillData 入口过滤 ReservedVarNames（既有问题一并修——原未过滤，调用方传 {_lastError:"xxx"} 会遮蔽系统变量）+ 归一。
+            var fillData = FilterReservedVars(request.FillData) ?? new Dictionary<string, object>();
+            // 组3 (3.2)：InitialVars 入口过滤 ReservedVarNames + 归一。
+            var initialVars = FilterReservedVars(request.InitialVars);
 
             // C5：App 生成 taskId（Worker 不自生成，决策11-A），对齐录制 RecordController 生成模式
             var taskId = Guid.NewGuid().ToString("N")[..8];
@@ -432,6 +472,9 @@ public class FillController : ControllerBase
             var progressCallbackUrl = $"{Request.Scheme}://{Request.Host}/api/fill/progress/{taskId}";
             var completeCallbackUrl = $"{Request.Scheme}://{Request.Host}/api/fill/complete/{taskId}";
 
+            // 组5 (5.6)：Serilog 记录 fillData + initialVars（fillData 既有未记录，一并补；明文记录，日志文件受服务器访问控制保护——观察-2 选 D 不脱敏）
+            _logger.LogInformation("填报任务启动 fillData: {FillData} initialVars: {InitialVars}", fillData, initialVars);
+
             var result = await _workerClient.StartFillAsync(
                 taskId,
                 request.DocumentTypeId,
@@ -439,7 +482,8 @@ public class FillController : ControllerBase
                 scripts, fillData,
                 progressCallbackUrl,
                 completeCallbackUrl,
-                attachmentBaseUrl);
+                attachmentBaseUrl,
+                initialVars);
 
             if (result == null)
                 return StatusCode(502, new { error = "Worker 不可用" });
@@ -510,6 +554,18 @@ public class FillController : ControllerBase
         if (!args.TryGetValue(key, out var el) || el.ValueKind != JsonValueKind.Array) return null;
         return el.EnumerateArray().Select(e => (T)Convert.ChangeType(e.GetString() ?? "", typeof(T))).ToArray();
     }
+
+    /// <summary>组3 (3.2)：入口过滤 ReservedVarNames（调用方不能传系统保留名，否则污染/遮蔽系统变量）+ 归一 JsonElement→CLR。
+    /// FillData 和 InitialVars 共用此方法（FillData 是既有问题一并修：原未过滤，调用方传 {_rowIndex:999} 会进 effectiveFillData 遮蔽系统变量）。</summary>
+    private static Dictionary<string, object>? FilterReservedVars(Dictionary<string, JsonElement>? input)
+    {
+        if (input == null) return null;
+        var result = new Dictionary<string, object>();
+        foreach (var kv in input)
+            if (!SmartFilling.Engine.Engine.ScriptLoader.ReservedVarNames.Contains(kv.Key))
+                result[kv.Key] = SmartFilling.Engine.Engine.VariableHelper.NormalizeJsonElement(kv.Value);
+        return result.Count > 0 ? result : null;
+    }
 }
 
 public class StartFillRequest
@@ -517,6 +573,8 @@ public class StartFillRequest
     public string DocumentTypeId { get; set; } = "";
     public string? DocumentTypeName { get; set; }
     public Dictionary<string, JsonElement>? FillData { get; set; }
+    /// <summary>组3：调用方传入的可变控制变量（可被脚本 storeAs 覆盖，与只读高优先级 fillData 分离）。入口过滤 ReservedVarNames + 归一。</summary>
+    public Dictionary<string, JsonElement>? InitialVars { get; set; }
 }
 
 /// <summary>Worker 进度 push 回调 payload（HttpProgressReporter.PostProgressAsync 发出，字段名 camelCase 经 JSON 序列化）。</summary>

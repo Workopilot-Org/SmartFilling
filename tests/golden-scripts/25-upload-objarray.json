@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-25-upload-objarray",
   "name": "GT25 文件上传（对象数组生产形态）",

@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-11-goto-phase-success",
   "name": "GT11 控制流：goto 跳过 + phase_success 提前结束当前 phase",

@@ -28,6 +28,8 @@ public class ScriptController : ControllerBase
     {
         // 用户决策 2（2026-07-01）：ScriptController.Save 不加 forceSave 入口——前端只用 /api/record/save（已支持 forceSave），
         // /api/script/save 无消费方；仅保留 catch→400 防御性（body 对齐 RecordController 保持一致）。
+        // 注：本端点不处理 DocumentType 关联（ScriptV2 不含 DocumentTypeId 字段，关联由 /api/record/save 调 ScriptService.AssociateScript 处理）。
+        // 如需经本端点关联，请调 ScriptService.AssociateScript(scriptId, documentTypeId)。
         try
         {
             _scriptService.SaveScript(script);

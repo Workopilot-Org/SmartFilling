@@ -10,6 +10,8 @@ public class FillTask
     public string DocumentTypeName { get; set; } = string.Empty;
     public List<ScriptV2> Scripts { get; set; } = [];
     public Dictionary<string, object> FillData { get; set; } = new();
+    /// <summary>组3：调用方传入的可变控制变量（可被脚本 storeAs 覆盖）。与 fillData（只读高优先级）分离，进 ctx.Vars 层。入口已过滤 ReservedVarNames + 归一。</summary>
+    public Dictionary<string, object>? InitialVars { get; set; }
     public TaskStatus Status { get; set; } = TaskStatus.Pending;
     /// <summary>进度 push 回调地址（per-task，请求体传入；ProgressReport.push=true 且非空才 HTTP POST，第3轮-C2）。</summary>
     public string? ProgressCallbackUrl { get; set; }
@@ -41,6 +43,8 @@ public class FillRequest
     /// <summary>④-4：脚本原始 JSON 文本列表（传原始文本而非 ScriptV2 对象——对象传输会被 MVC 反序列化丢弃未知字段，补不了 schema 残留字段校验）。Worker StartFill 逐个 LoadFromJson 校验。</summary>
     public List<string> Scripts { get; set; } = [];
     public Dictionary<string, object> FillData { get; set; } = new();
+    /// <summary>组3：调用方传入的可变控制变量（可被脚本 storeAs 覆盖）。Worker FillController 入口过滤 ReservedVarNames + 归一后赋 FillTask.InitialVars。</summary>
+    public Dictionary<string, object>? InitialVars { get; set; }
     /// <summary>进度 push 回调地址（可选，请求体传入；ProgressReport.push=true 时 Worker POST 到此）。</summary>
     public string? ProgressCallbackUrl { get; set; }
     /// <summary>终态 push 回调地址（可选，请求体传入；CompleteReport.push=true 时 Worker POST 到此）。</summary>

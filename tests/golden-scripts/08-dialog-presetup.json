@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-08-dialog-presetup",
   "name": "GT08 对话框处理（preSetup + handleDialog）",

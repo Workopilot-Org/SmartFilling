@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-04-login-flow-presskey",
   "name": "GT04 登录全流程+按键提交",

@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-12-script-success",
   "name": "GT12 控制流：script_success 提前结束整个脚本",

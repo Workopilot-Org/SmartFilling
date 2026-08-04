@@ -37,7 +37,8 @@ public class WorkerApiClient
         Dictionary<string, object> fillData,
         string? progressCallbackUrl = null,
         string? completeCallbackUrl = null,
-        string? attachmentBaseUrl = null)
+        string? attachmentBaseUrl = null,
+        Dictionary<string, object>? initialVars = null)  // 组3 (3.3)：透传调用方 InitialVars（已过滤 ReservedVarNames + 归一）
     {
         // 附件 URL 转换：将 fillData 中 file 字段的相对 path 转为绝对 URL（Worker 砍 AttachmentBaseUrl，只收绝对 URL，B3）
         ConvertAttachmentUrls(fillData, attachmentBaseUrl ?? "");
@@ -49,6 +50,7 @@ public class WorkerApiClient
             DocumentTypeName = documentTypeName,
             Scripts = scripts,
             FillData = fillData,
+            InitialVars = initialVars,  // 组3 (3.3)：null 时不序列化（Worker FillRequest.InitialVars 可空）
             ProgressCallbackUrl = progressCallbackUrl,
             CompleteCallbackUrl = completeCallbackUrl
         };

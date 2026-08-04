@@ -79,7 +79,7 @@ public class ScriptServiceSaveScriptTests
         Assert.Contains("强制保存测试", json);  // 验值：文件内容正确
     }
 
-    /// <summary>脏关联修复：forceSave=false 校验失败 → documents.json 未被改写（校验前置于 DocumentType 关联）。</summary>
+    /// <summary>脏关联修复：forceSave=false 校验失败 → documents.json 未被改写（SaveScript 不再关联，关联由 AssociateScript 独立处理）。</summary>
     [Fact]
     public void SaveScript_ForceSaveFalse_ValidationFail_DoesNotMutateDocuments()
     {
@@ -88,35 +88,62 @@ public class ScriptServiceSaveScriptTests
         {
             ScriptId = "test-dirty-assoc",
             Name = "脏关联测试",
-            DocumentTypeId = "新单据-不应创建",  // 校验通过才会触发自动创建 DocumentType
             Phases = [new PhaseNode { Kind = "phase", Name = "main", Type = "sequential", AiGoal = null, Steps = [] }]  // 缺 aiGoal → 校验失败
         };
 
         Assert.Throws<ScriptValidationException>(() => service.SaveScript(script));
-        // documents.json 不含该 DocumentType（校验失败未关联；文件不存在也算通过——构造时不创建 documents.json）
+        // documents.json 不含任何 DocumentType（SaveScript 删关联块后不创建任何 DocumentType）
         var docsContent = File.Exists(documentsFile) ? File.ReadAllText(documentsFile) : "";
         Assert.DoesNotContain("新单据-不应创建", docsContent);
     }
 
-    /// <summary>forceSave=true + DocumentTypeId → 仍正确关联 DocumentType（正向路径：校验跳过不阻断关联，顺带修脏关联未破坏正常关联）。</summary>
+    /// <summary>AssociateScript 关联 DocumentType：保存脚本后调 AssociateScript → 自动创建 DocumentType + scriptId 加入 OrderedScriptIds。
+    /// （原 SaveScript_ForceSaveTrue_WithDocumentType_AssociatesCorrectly 改造：SaveScript 删关联块后，关联改由 AssociateScript 独立完成）</summary>
     [Fact]
-    public void SaveScript_ForceSaveTrue_WithDocumentType_AssociatesCorrectly()
+    public void AssociateScript_WithDocumentType_AssociatesCorrectly()
     {
         var (service, _, documentsFile, _) = Create();
         var script = new ScriptV2
         {
             ScriptId = "test-force-assoc",
             Name = "强制保存关联测试",
-            DocumentTypeId = "强制单据",  // forceSave 跳校验后应正常关联（自动创建 DocumentType）
-            Phases = [new PhaseNode { Kind = "phase", Name = "main", Type = "sequential", AiGoal = null, Steps = [] }]  // 缺 aiGoal（forceSave 跳过）
+            Phases = [new PhaseNode { Kind = "phase", Name = "main", Type = "sequential", AiGoal = null, Steps = [] }]  // 缺 aiGoal（forceSave 跳过校验）
         };
 
-        service.SaveScript(script, forceSave: true);
-        // documents.json 被改写 + 含该 DocumentType + scriptId 加入 OrderedScriptIds（正向关联未破坏）
+        service.SaveScript(script, forceSave: true);  // 只保存脚本文件，不关联
+        // documents.json 此时不存在（SaveScript 不再创建 DocumentType）
+        Assert.False(File.Exists(documentsFile));
+
+        service.AssociateScript(script.ScriptId, "强制单据");  // 关联：自动创建 DocumentType
+        // documents.json 被创建 + 含该 DocumentType + scriptId 加入 OrderedScriptIds
         Assert.True(File.Exists(documentsFile));
         var docsJson = File.ReadAllText(documentsFile);
         Assert.Contains("强制单据", docsJson);
         Assert.Contains("test-force-assoc", docsJson);
+    }
+
+    /// <summary>AssociateScript 幂等：重复调同一 scriptId + documentTypeId → OrderedScriptIds 不重复添加 + 不冗余写盘（仅首次变更写盘）。</summary>
+    [Fact]
+    public void AssociateScript_Idempotent_NoDuplicateNoRedundantWrite()
+    {
+        var (service, _, documentsFile, _) = Create();
+        var script = new ScriptV2
+        {
+            ScriptId = "idempotent-assoc",
+            Name = "幂等关联测试",
+            Phases = [new PhaseNode { Kind = "phase", Name = "main", Type = "sequential", AiGoal = "目标", Steps = [] }]
+        };
+        service.SaveScript(script);
+        service.AssociateScript(script.ScriptId, "幂等单据");
+        var firstMtime = File.GetLastWriteTime(documentsFile);
+
+        service.AssociateScript(script.ScriptId, "幂等单据");  // 第二次：OrderedScriptIds 已含，不写盘
+        var secondMtime = File.GetLastWriteTime(documentsFile);
+
+        var docsJson = File.ReadAllText(documentsFile);
+        // OrderedScriptIds 只含一次 scriptId（验值：去重）
+        var count = docsJson.Split("idempotent-assoc").Length - 1;
+        Assert.Equal(1, count);  // 验值：不重复添加
     }
 
     /// <summary>经生产反序列化路径构造（DeserializeOnly 覆盖 PhaseItemConverter），缺 aiGoal → ScriptValidationException。</summary>

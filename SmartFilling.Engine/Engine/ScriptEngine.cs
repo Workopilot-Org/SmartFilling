@@ -66,7 +66,8 @@ public class ScriptEngine
         Dictionary<string, object> fillData,
         IPage page,
         CancellationToken ct = default,
-        string? taskId = null)
+        string? taskId = null,
+        Dictionary<string, object>? initialVars = null)
     {
         // 应用 viewport
         var vp = script.Settings?.Viewport ?? _options.Viewport;
@@ -83,6 +84,35 @@ public class ScriptEngine
         // Q4：入口深度归一 fillData（含嵌套），无论 HTTP/WS 哪个入口传入，下游只见 List<object>/Dictionary/标量。
         // ② 消除 WS string-JSON 源头后本归一兜底；对已归一数据幂等穿过（修订1：无 JsonElement 的 Dictionary 原样返回不复制）。
         NormalizeFillData(fillData);
+
+        // 组1/组3：initialVars 注入 ctx.Vars（调用方/前序脚本透传的可变控制变量，可被脚本 storeAs 覆盖）。
+        // 🔴 Bug-1 修复：归一 JsonElement→CLR（Worker 端 FillRequest.InitialVars 经 MVC 反序列化值是 JsonElement，
+        // 与 fillData 同源问题——fillData 有 NormalizeFillData 归一，initialVars 也需归一，
+        // 否则 ctx.Vars 存 JsonElement 致 ReplaceVars val?.ToString() 对 JsonElement(Object) 返 JSON 字符串异常 +
+        // IsEmptyValue 对 JsonElement(String "") 返 false（只判 Array 空）→ DefaultValue 兜底失效（空串不兜底）。
+        if (initialVars != null)
+            foreach (var kv in initialVars)
+                ctx.Vars[kv.Key] = kv.Value is JsonElement je
+                    ? VariableHelper.NormalizeJsonElement(je) : kv.Value;
+
+        // DefaultValue 兜底：对 script.InitialVars 声明的变量，ctx.Vars 无值或空时用 DefaultValue。
+        // 优先级：透传值（initialVars/mergedVars）> 前序 storeAs（mergedVars）> DefaultValue（ctx.Vars 无值或空时兜底）。
+        // 🔴 待决策-5 已决策方案 A：声明但无透传值且无 defaultValue 时 LogWarning（silent-success 加可观测，{{X}} 将保留字面占位符可能致回放失败）。
+        // 🔴 边界修复：JSON `defaultValue: null` 经 STJ 反序列化为 JsonElement(ValueKind=Null)（boxed 非 C# null），
+        // 须视为"无默认值"（NormalizeJsonElement 返 "" 空串非有效默认值，且不触发 LogWarning = silent）。
+        if (script.InitialVars != null)
+            foreach (var iv in script.InitialVars)
+            {
+                var hasValue = ctx.Vars.TryGetValue(iv.Name, out var v) && !VariableHelper.IsEmptyValue(v);
+                // JsonElement(Null) → 视为 C# null（语义上"无默认值"）
+                var defaultVal = (iv.DefaultValue is JsonElement dje0 && dje0.ValueKind == JsonValueKind.Null) ? null : iv.DefaultValue;
+                if (!hasValue && defaultVal != null)
+                    ctx.Vars[iv.Name] = defaultVal is JsonElement dje
+                        ? VariableHelper.NormalizeJsonElement(dje) : defaultVal;
+                if (!hasValue && defaultVal == null)
+                    _logger.LogWarning($"initialVars 声明的 '{iv.Name}' 无透传值且无 defaultValue，{{{{{iv.Name}}}}} 将保留字面占位符（可能致回放失败）");
+            }
+
         ctx.ScopeChain.Add(fillData);
         ctx.Vars["_lastUrl"] = page.Url;
         ctx.GoalStack.Push(script.Description ?? script.Name);  // 改动6.4：目标链栈底=脚本整体目标
@@ -252,6 +282,23 @@ public class ScriptEngine
             || msg.Contains("Browser closed", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>解析步骤间等待时长(ms)。优先级：script.Settings > EngineOptions。static 供测试直接调用。</summary>
+    internal static int ResolveStepInterval(ScriptV2 script, EngineOptions options)
+        => script.Settings?.StepIntervalMs ?? options.StepIntervalMs;
+
+    /// <summary>步骤间固定等待。取值优先级 script.Settings > EngineOptions。
+    /// 0/负数时跳过（不触发调度，避免 Task.Delay 抛异常）。读取/检测/等待/控制流类 action（wait/check/extract/screenshot/goto）
+    /// 不改变页面状态、不触发异步刷新，跳过（决策 2026-07-30）；evaluate 边界保守参与（JS 可能改 DOM）。
+    /// 跳过判据参考 StepExecutor.cs:76 的"检测类"思路（不改变页面状态的 action），具体列表按步骤间等待语义定。每个 step 成功后都等待（含跨 phase 间、loop 行间）；
+    /// 脚本最后一个 step 后的尾部等待无害（无下一个 step，多等 1 次再返回）。</summary>
+    private async Task ApplyStepIntervalAsync(ExecutionContext ctx, ScriptV2 script, string action)
+    {
+        if (action is "wait" or "check" or "extract" or "screenshot" or "goto") return;
+        int interval = ResolveStepInterval(script, _options);
+        if (interval <= 0) return;
+        await Task.Delay(interval, ctx.Ct);
+    }
+
     async Task<PhaseResult?> ExecutePhaseAsync(ExecutionContext ctx, ScriptV2 script, int phaseIdx, PhaseNode phase, Dictionary<string, object> fillData, int startStep = 0)
     {
         ctx.PhaseName = phase.Name;
@@ -316,7 +363,7 @@ public class ScriptEngine
             // 累积 AI 统计（ai action 步骤）
             AccumulateAiStats(ctx, result);
 
-            if (step.Action == "check" && result?.ControlFlow != null)
+            if (result?.ControlFlow != null)
             {
                 var cf = result.ControlFlow;
                 // goto toStep: 在当前 phase 内修改循环变量
@@ -352,6 +399,7 @@ public class ScriptEngine
                 var flowResult = await HandleControlFlowAsync(ctx, script, phase, phaseIdx, phase.Steps, j, cf, fillData);
                 if (flowResult != null) return flowResult;
             }
+            await ApplyStepIntervalAsync(ctx, script, step.Action);
         }
         return new PhaseResult(true);
         } finally { ctx.GoalStack.Pop(); }  // 改动6.4：目标链出口 pop（try-finally 覆盖所有 return/throw，防漏 pop）
@@ -438,35 +486,45 @@ public class ScriptEngine
             if (rowIdx >= maxLoopCount)
                 return new PhaseResult(false) { FailedStepIndex = -1, Message = $"loop '{phase.Name}' 超过最大循环次数 {maxLoopCount}" };
 
+            // 组2（办法 K 扩展）：_rowIndex 不再写 ctx.Vars（避免跨迭代残留 + 跨脚本透传），改写入 rowData（行级作用域，loop 结束随 rowData 移除）。
+            // 临时 scopeChain 供 loopCondition + baseRowCount 取 {{_rowIndex}}（不写 ctx.Vars、不 Insert ctx.ScopeChain）。
+            // 创建一次，loopCondition 与 baseRowCount 共用同一 tempChain（只读，不修改），不影响其他迭代。
+            // 扩展（既有 silent bug 修复）：原代码 loopCondition 检测在 L469 ctx.Vars["_rowIndex"] 之前，引用 {{_rowIndex}} 取不到（操作手册 L505 stale）；
+            // 改后 loopCondition 传 tempChain（含 _rowIndex）→ {{_rowIndex}} 占位符可用（经 ReplaceVars 替换命中 tempChain）。
+            var rowIdxValue = rowIdx + (phase.RowIndexOffset ?? 0);
+            var tempChain = ctx.ScopeChain
+                .Prepend(new Dictionary<string, object> { ["_rowIndex"] = rowIdxValue })
+                .ToList();
+
             if (!isRetry && phase.LoopCondition != null)
             {
                 bool loopCond;
-                try { loopCond = await _detectEvaluator.EvaluateAsync(phase.LoopCondition, ctx.ActivePage, script, phase.Iframe, ctx.Vars, ctx.ScopeChain, ctx.RowBaselineStack); }
+                try { loopCond = await _detectEvaluator.EvaluateAsync(phase.LoopCondition, ctx.ActivePage, script, phase.Iframe, ctx.Vars, tempChain, ctx.RowBaselineStack); }
                 catch (Exception ex) { _logger.LogWarning($"Phase {phase.Name} loopCondition 检测失败: {ex.Message}"); loopCond = false; }  // R2-D：加日志保 observability
                 if (!loopCond) break;
             }
             isRetry = false;
             if (phase.LoopSource != null && rowIdx >= rows.Count) break;
 
-            ctx.Vars["_rowIndex"] = rowIdx + (phase.RowIndexOffset ?? 0);
-
             // 记录表格行数供 new_row_appears 使用（R4 A′：与判断端 DetectEvaluator EvaluateAsync 的 new_row_appears frame 同源——
             // 用 newRowDetect.Iframe 链 + tableSel ReplaceVars，否则 iframe 内 table 主文档找不到 → RowBaselineStack 恒 0 → new_row_appears 误判）
             // DC10（a-a-4）：递归找 new_row_appears 节点（补顶层 gap——原 FirstOrDefault 只找顶层，嵌套 all/any/not 内的 new_row_appears 漏设基线 → silent 失效）。
             // DC13（a-a-4）：_lastRowCount 单值改栈（原 vars[_lastRowCountStack]，P12 方式 A 改动13 移出 vars → ctx.RowBaselineStack；每行迭代 Push/Pop，嵌套 loop 隔离——原单 key 共享，内层覆盖外层 → 外层比对错 silent）。
             var newRowDetect = TryFindNewRowAppearsNode(phase.Steps);
-            var tableSel = VariableHelper.ReplaceVars(newRowDetect?.Selector ?? "", ctx.ScopeChain, ctx.Vars);  // DC9 后 selector 必填（schema 强制）；null 时 ReplaceVars("") 返 ""，Locator("") 同样走 catch 基线 0（?? "" 防 nullable 警告）  // DC9 后 selector 必填（schema 强制）；null 时 Locator 抛→catch 基线 0
-            var tableFrame = FrameResolver.ResolveChain(ctx.ActivePage, IframeChainMerger.Resolve(newRowDetect?.Iframe, phase.Iframe), ctx.ScopeChain, ctx.Vars);
+            var tableSel = VariableHelper.ReplaceVars(newRowDetect?.Selector ?? "", tempChain, ctx.Vars);  // DC9 后 selector 必填（schema 强制）；null 时 ReplaceVars("") 返 ""，Locator("") 同样走 catch 基线 0
+            var tableFrame = FrameResolver.ResolveChain(ctx.ActivePage, IframeChainMerger.Resolve(newRowDetect?.Iframe, phase.Iframe), tempChain, ctx.Vars);
             int baseRowCount;
             try { baseRowCount = await tableFrame.Locator(tableSel!).CountAsync(); }
             catch { baseRowCount = 0; }
 
+            // 组2：rowData 塞 _rowIndex（与 _rowItem 并列，行级作用域）；LoopSource 为空 loop（rows=[]，rowData null）创建临时 rowData 含 _rowIndex，保证 loop 内 {{_rowIndex}} 经 scopeChain 命中 rowData。
             var rowData = rows.ElementAtOrDefault(rowIdx);
             if (rowData != null)
-            {
-                ctx.ScopeChain.Insert(0, rowData);
-                PushRowCountStack(ctx, baseRowCount);  // DC13：每行迭代开头 Push（与 ScopeChain.Insert 同步）
-            }
+                rowData["_rowIndex"] = rowIdxValue;
+            else
+                rowData = new Dictionary<string, object> { ["_rowIndex"] = rowIdxValue };
+            ctx.ScopeChain.Insert(0, rowData);
+            PushRowCountStack(ctx, baseRowCount);  // DC13：每行迭代开头 Push（与 ScopeChain.Insert 同步；组2 移出 if 块统一执行，rowData 必非 null）
 
             for (int j = 0; j < phase.Steps.Count; j++)
             {
@@ -524,7 +582,7 @@ public class ScriptEngine
                 // 累积 AI 统计（ai action 步骤）
                 AccumulateAiStats(ctx, result);
 
-                if (step.Action == "check" && result?.ControlFlow != null)
+                if (result?.ControlFlow != null)
                 {
                     var cf = result.ControlFlow;
                     switch (cf.Then)
@@ -651,6 +709,7 @@ public class ScriptEngine
                             break;  // nothing/no-op，继续下一 step
                     }
                 }
+                await ApplyStepIntervalAsync(ctx, script, step.Action);
             }
 
         NEXT_ITERATION:
@@ -1566,7 +1625,8 @@ public class ScriptEngine
         var name = string.IsNullOrEmpty(step.Name) ? step.Action : step.Name;
         var parts = new List<string> { $"[phase {ctx.PhaseName}] [step {name}]" };
         // description 字段紧跟步骤名后（所有 action 含 ai；ai 不再在 BuildStepFieldSummary 重复加，见改动 2）
-        if (!string.IsNullOrEmpty(step.Description)) parts.Add($"description={step.Description}");
+        // Truncate(60)：超 60 字符截断加 …，防日志膨胀；与 _logger.LogInformation 的 Truncate 行为一致
+        if (!string.IsNullOrEmpty(step.Description)) parts.Add($"description={Truncate(step.Description, 60)}");
         parts.Add($"action={step.Action}");
         if (step.Selector != null) parts.Add($"selector={step.Selector}");
         var summary = BuildStepFieldSummary(step, ctx);

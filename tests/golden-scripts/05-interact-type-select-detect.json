@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-05-interact-type-select-detect",
   "name": "GT05 交互集：双击/悬停/滚动/逐字输入/选择匹配/计数/勾选/选中",

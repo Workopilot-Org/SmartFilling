@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-09-upload-array",
   "name": "GT09 文件上传（单文件 + 数组）",

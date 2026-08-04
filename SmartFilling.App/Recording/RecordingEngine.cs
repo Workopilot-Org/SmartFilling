@@ -156,7 +156,6 @@ public class RecordingEngine
     internal ScriptV2 Script => _script;
 
     public async Task<ScriptV2> RecordAsync(
-        string documentTypeId,
         string taskDescription,
         string? prerequisiteScriptId,
         bool headless,
@@ -232,7 +231,6 @@ public class RecordingEngine
                 _script = new ScriptV2
                 {
                     ScriptId = Guid.NewGuid().ToString("N")[..8],
-                    DocumentTypeId = documentTypeId,
                     Name = $"录制-{DateTime.Now:yyyyMMdd-HHmmss}",
                     Phases = []
                 };
@@ -452,7 +450,7 @@ public class RecordingEngine
             ChatTool.CreateFunctionTool("request_help", "向用户请求帮助",
                 BinaryData.FromString("""{"type":"object","properties":{"question":{"type":"string"}},"required":["question"]}""")),
             ChatTool.CreateFunctionTool("done", "录制完成",
-                BinaryData.FromString("""{"type":"object","properties":{"summary":{"type":"string"}},"required":[]}""")),
+                BinaryData.FromString("""{"type":"object","properties":{"summary":{"type":"string"},"initialVars":{"type":"array","description":"本脚本依赖的外部变量声明（组4三档：任务描述详细说明传入参数时传，只说使用初始参数无具体时request_help问用户，没提时不传）","items":{"type":"object","properties":{"name":{"type":"string","description":"变量名（合法标识符，必填）"},"description":{"type":"string","description":"描述（可选）"},"defaultValue":{"description":"默认值（可选，任意JSON字面值，透传为空时兜底）"}},"required":["name"]}},"settings":{"type":"object","description":"脚本级全局配置（组4三档：任务描述详细说明脚本级配置时传，只说配置无具体时request_help问用户，没提时不传）。字段对应ScriptSettings","properties":{"defaultTimeout":{"type":"integer"},"maxAiTurns":{"type":"integer"},"maxScriptDuration":{"type":"integer"},"maxLoopCount":{"type":"integer"},"maxPhaseGotoCount":{"type":"integer"},"maxPhaseJumpCount":{"type":"integer"},"stepIntervalMs":{"type":"integer"},"onError":{"type":"string","enum":["stop","skip","ai-fallback-stop","ai-fallback-skip"]},"viewport":{"type":"object","properties":{"width":{"type":"integer"},"height":{"type":"integer"}}},"stepRetry":{"type":"object","properties":{"count":{"type":"integer"},"interval":{"type":"integer"}}},"rerun":{"type":"object","properties":{"maxRowRerunCount":{"type":"integer"},"maxPhaseRerunCount":{"type":"integer"},"interval":{"type":"integer"}}},"screenshot":{"type":"object","properties":{"actionDefaultFolder":{"type":"string"},"compressQuality":{"type":"integer"}}}}}},"required":[]}""")),
         ];
     }
 
@@ -2497,6 +2495,30 @@ public class RecordingEngine
         {
             _script = _script with { Description = summary };
             await LogAsync(summary);
+        }
+
+        // 组4 (R3)：initialVars 反序列化（AI 传的数组 → List<InitialVar>，写入 _script.InitialVars）。
+        // _jsonOptions PropertyNameCaseInsensitive=true 兜底匹配 camelCase→PascalCase；空值处理：不传或非数组 → 不更新（保持 null）。
+        var ivVal = args.GetValueOrDefault("initialVars");
+        if (ivVal is System.Text.Json.JsonElement ivEl && ivEl.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            var list = ivEl.EnumerateArray()
+                .Select(e => e.Deserialize<Engine.Models.InitialVar>(_jsonOptions))
+                .Where(v => v != null)
+                .Select(v => v!)
+                .ToList();
+            if (list.Count > 0)
+                _script = _script with { InitialVars = list };
+        }
+
+        // 组4 (R3)：settings 反序列化（AI 传的对象 → ScriptSettings，写入 _script.Settings）。
+        // 仅含 AI 传的字段，其余默认 null；空值处理：不传或非对象 → 不更新（保持 null）。
+        var settingsVal = args.GetValueOrDefault("settings");
+        if (settingsVal is System.Text.Json.JsonElement sEl && sEl.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            var settings = sEl.Deserialize<Engine.Models.ScriptSettings>(_jsonOptions);
+            if (settings != null)
+                _script = _script with { Settings = settings };
         }
 
         await LogAsync($"录制完成，共 {StepCount} 个步骤");

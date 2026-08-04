@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-06-extract-evaluate-storeas",
   "name": "GT06 数据提取+JS求值+变量存储+返回数据",

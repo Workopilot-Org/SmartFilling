@@ -110,11 +110,16 @@ public class FillController : ControllerBase
                 DocumentTypeId = request.DocumentTypeId,
                 DocumentTypeName = request.DocumentTypeName,
                 Scripts = validatedScripts,
-                FillData = request.FillData,
+                FillData = FilterReservedVars(request.FillData) ?? new Dictionary<string, object>(),  // 组3 (3.5)：Worker 兜底入口过滤 ReservedVarNames（防 App/PlatformAdapter/直连任一路径漏过滤）+ 归一
+                InitialVars = FilterReservedVars(request.InitialVars),  // 组3 (3.5)：Worker 兜底入口过滤 + 归一（即使 App 已过滤，Worker 兜底防 PlatformAdapter/直连）
                 ProgressCallbackUrl = request.ProgressCallbackUrl,  // H9：显式赋值中转（入口请求体→FillTask 存储→reporter/handler 消费，三段不缺中转）
                 CompleteCallbackUrl = request.CompleteCallbackUrl,
                 Status = BWTaskStatus.Running
             };
+
+            // 组5 (5.6)：Serilog 记录 task.FillData + task.InitialVars（已过滤 ReservedVarNames + 归一；明文记录——观察-2 选 D 不脱敏，日志文件受服务器访问控制保护）
+            // Worker 端 EngineILogger 仅 LogInformation(string) 单参数（无 params 重载），用 $"..." 插值单参数（同项目既有约定）。
+            _logger.LogInformation($"Worker 收到任务 fillData: {JsonSerializer.Serialize(task.FillData)} initialVars: {JsonSerializer.Serialize(task.InitialVars)}");
 
             // 下载附件：B3 删 PlatformOptions.AttachmentBaseUrl（App/PlatformAdapter 上游已转绝对 URL，传空安全）；timeout 用 AttachmentDownloadTimeoutSeconds（从 PlatformOptions.DefaultTimeoutSeconds 迁移）
             var timeoutSeconds = _workerOptions.AttachmentDownloadTimeoutSeconds > 0 ? _workerOptions.AttachmentDownloadTimeoutSeconds : 60;
@@ -201,4 +206,18 @@ public class FillController : ControllerBase
         status = _concurrencyManager.IsBusy ? "busy" : "available",
         timestamp = DateTime.Now
     });
+
+    /// <summary>组3 (3.5)：Worker 兜底入口过滤 ReservedVarNames + 归一 JsonElement→CLR。
+    /// FillRequest/FillTask 是 object 非 JsonElement（Worker FillRequest 经 MVC 反序列化值是 JsonElement 运行时，赋 FillTask 前需归一）。
+    /// 与 App FillController.FilterReservedVars（入参 JsonElement）不同签名（两控制器不同类不冲突），逻辑等价。</summary>
+    private static Dictionary<string, object>? FilterReservedVars(Dictionary<string, object>? input)
+    {
+        if (input == null) return null;
+        var result = new Dictionary<string, object>();
+        foreach (var kv in input)
+            if (!SmartFilling.Engine.Engine.ScriptLoader.ReservedVarNames.Contains(kv.Key))
+                result[kv.Key] = kv.Value is JsonElement je
+                    ? SmartFilling.Engine.Engine.VariableHelper.NormalizeJsonElement(je) : kv.Value;
+        return result.Count > 0 ? result : null;
+    }
 }

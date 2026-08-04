@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-14-phase-error-step-error",
   "name": "GT14 控制流：phase_error 与 step_error 配合 onError skip 恢复",

@@ -724,7 +724,6 @@ public class ModelSerializationTests
             "version": 2,
             "scriptId": "hk-declaration",
             "name": "HK Declaration Filing",
-            "documentTypeId": "DT_HK",
             "description": "HK tax declaration script",
             "settings": {
                 "defaultTimeout": 30000,
@@ -791,7 +790,6 @@ public class ModelSerializationTests
 
         Assert.NotNull(script);
         Assert.Equal("hk-declaration", script.ScriptId);
-        Assert.Equal("DT_HK", script.DocumentTypeId);
         Assert.Equal(3, script.Fields.Count);
         Assert.Equal(3, script.Phases.Count);
 
@@ -830,7 +828,6 @@ public class ModelSerializationTests
             "version": 2,
             "scriptId": "roundtrip-001",
             "name": "Roundtrip Test",
-            "documentTypeId": "DT_TEST",
             "phases": [
                 {
                     "kind": "phase",
@@ -872,7 +869,6 @@ public class ModelSerializationTests
         Assert.NotNull(script2);
         Assert.Equal(script!.ScriptId, script2.ScriptId);
         Assert.Equal(script.Name, script2.Name);
-        Assert.Equal(script.DocumentTypeId, script2.DocumentTypeId);
         Assert.Equal(script.Fields.Count, script2.Fields.Count);
         Assert.Equal(script.Fields[0].Name, script2.Fields[0].Name);
         Assert.Equal(script.Settings!.DefaultTimeout, script2.Settings!.DefaultTimeout);

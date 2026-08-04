@@ -305,6 +305,8 @@ public static class ScriptLoader
         ValidateCaptcha(script.Phases, errors);                   // F2：captcha pixel 必填 slider/target/background selector
         ValidateNameCollisions(script, fieldNames, errors);       // ④-8：字段名∩storeAs 名 / 字段名∩系统保留字（静默遮蔽取错值）
         ValidateSelectorCharset(script, errors);                  // F：selector 非法字符（弯引号/全角空格）加载期拦截，把"回放才崩"提前到"加载就拒"
+        ValidateInitialVarsNames(script, fieldNames, errors);     // 组3 (3.11)：initialVars name 非空/合法字符/不冲突 ReservedVarNames/SystemCredentialKeys/不与 fields 冲突/内部不重复
+        ValidateSettings(script.Settings, errors);                // 组3补充 (3.15)：ScriptSettings 值域校验（defaultTimeout/maxScriptDuration 等 > 0，compressQuality 1-100 等）
 
         return errors;
     }
@@ -388,15 +390,18 @@ public static class ScriptLoader
         // 注意：returnData 顶层占位符本就不经本方法校验（仅 WalkItems(Phases)），不受影响。
         var storeAsNames = CollectAllStoreAsNames(script.Phases);
 
+        // 组3 (3.10)：收集 script.InitialVars 声明的变量名，放行 {{name}} 占位符（声明 name 供调用方/前序脚本透传，未声明的 {{unknown}} 仍报错防拼错）。
+        var initialVarNames = script.InitialVars?.Select(v => v.Name).ToHashSet(StringComparer.Ordinal) ?? new HashSet<string>();
+
         void CheckStep(StepNode step)
         {
             var placeholders = ExtractPlaceholders(step);
             foreach (var ph in placeholders)
             {
-                if (specialVars.Contains(ph) || definedFields.Contains(ph) || storeAsNames.Contains(ph)) continue;
+                if (specialVars.Contains(ph) || definedFields.Contains(ph) || storeAsNames.Contains(ph) || initialVarNames.Contains(ph)) continue;
                 // 不在 fields 中定义，可能是嵌套对象的字段路径（如 items.name），跳过
                 if (ph.Contains('.')) continue;
-                errors.Add($"占位符 {{{{{ph}}}}} 引用的字段未在 fields[] 中定义 (step: {step.Action} {step.Selector})");
+                errors.Add($"占位符 {{{{{ph}}}}} 引用的变量 '{ph}' 未在 fields[] 中定义或 initialVars 中声明 (step: {step.Action} {step.Selector})。若为外部变量（调用方传入/前序脚本透传），请在脚本顶层 initialVars 中声明 '{ph}'。");
             }
         }
 
@@ -409,9 +414,9 @@ public static class ScriptLoader
                 foreach (Match m in Regex.Matches(layer, @"\{\{(\w+(?:\.\w+)*)\}\}"))
                 {
                     var ph = m.Groups[1].Value;
-                    if (specialVars.Contains(ph) || definedFields.Contains(ph) || storeAsNames.Contains(ph)) continue;
+                    if (specialVars.Contains(ph) || definedFields.Contains(ph) || storeAsNames.Contains(ph) || initialVarNames.Contains(ph)) continue;
                     if (ph.Contains('.')) continue;
-                    errors.Add($"占位符 {{{{{ph}}}}} 引用的字段未在 fields[] 中定义 ({context}, iframe 链)");
+                    errors.Add($"占位符 {{{{{ph}}}}} 引用的变量 '{ph}' 未在 fields[] 中定义或 initialVars 中声明 ({context}, iframe 链)。若为外部变量，请在 initialVars 中声明 '{ph}'。");
                 }
             }
         }
@@ -605,6 +610,94 @@ public static class ScriptLoader
             errors.Add($"storeAs 变量名 '{name}' 与系统保留变量冲突 (step: {step.Action} {step.Selector})");
         else if (SystemCredentialKeys.Contains(name))  // DEC-7：storeAs 名禁用 username/password（fillData 系统凭据在 scopeChain 末层优先于 vars → storeAs 被永久遮蔽取错值）
             errors.Add($"storeAs 变量名 '{name}' 是系统凭据字段名（会被 fillData 的 username/password 系统凭据永久遮蔽，静默取错值），请换名 (step: {step.Action} {step.Selector})");
+    }
+
+    /// <summary>组3 (3.11)：校验脚本顶层 initialVars 声明。
+    /// ① name 非空 + 合法字符 ^[a-zA-Z_]\w*$（须以字母/下划线开头，区别于 storeAs 的 \w+ 允许数字开头）
+    /// ② name 不与 ReservedVarNames 冲突（防遮蔽系统变量）
+    /// ③ name 不与 SystemCredentialKeys 冲突（防遮蔽凭据）
+    /// ④ name 不与 fields name 重复（防 fields 遮蔽 initialVars——fields 在 scopeChain 优先于 vars）
+    /// ⑤ initialVars 内部 name 不重复
+    /// defaultValue 不校验类型（任意 JSON 字面值，运行时 NormalizeJsonElement 归一）；不校验 initialVars name 与 storeAs name 同名（合法，storeAs 覆盖 initialVars）。</summary>
+    private static readonly Regex InitialVarNameRegex = new(@"^[a-zA-Z_]\w*$", RegexOptions.Compiled);
+
+    private static void ValidateInitialVarsNames(ScriptV2 script, HashSet<string> fieldNames, List<string> errors)
+    {
+        if (script.InitialVars == null || script.InitialVars.Count == 0) return;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var iv in script.InitialVars)
+        {
+            if (string.IsNullOrWhiteSpace(iv.Name))
+            {
+                errors.Add("initialVars 的 name 不能为空");
+                continue;
+            }
+            if (!InitialVarNameRegex.IsMatch(iv.Name))
+                errors.Add($"initialVars 变量名 '{iv.Name}' 不合法，须以字母/下划线开头，后跟字母/数字/下划线");
+            else if (ReservedVarNames.Contains(iv.Name))
+                errors.Add($"initialVars 变量名 '{iv.Name}' 与系统保留变量冲突（会遮蔽系统变量）");
+            else if (SystemCredentialKeys.Contains(iv.Name))
+                errors.Add($"initialVars 变量名 '{iv.Name}' 是系统凭据字段名（会被 fillData 的 username/password 系统凭据永久遮蔽），请换名");
+            else if (fieldNames.Contains(iv.Name))
+                errors.Add($"initialVars 变量名 '{iv.Name}' 与 fields 字段名冲突（fields 在 scopeChain 优先于 vars，initialVars 会被永久遮蔽）");
+            else if (!seen.Add(iv.Name))
+                errors.Add($"initialVars 变量名 '{iv.Name}' 重复声明");
+        }
+    }
+
+    /// <summary>组3补充 (3.15)：校验 ScriptSettings 值域（防配置错值导致运行时异常，如 defaultTimeout=0 致 Playwright 立即超时）。
+    /// 触发时机：保存（forceSave=false）+ 回放 + 读取三处（LoadFromJson 内部经 ValidateAndGetErrors）；forceSave=true 跳过保存校验但回放仍校验。</summary>
+    private static readonly HashSet<string> ValidOnErrorValues = new(StringComparer.OrdinalIgnoreCase) { "stop", "skip", "ai-fallback-stop", "ai-fallback-skip" };
+
+    private static void ValidateSettings(ScriptSettings? settings, List<string> errors)
+    {
+        if (settings == null) return;
+        if (settings.DefaultTimeout is int dt && dt <= 0)
+            errors.Add($"settings.defaultTimeout 必须 > 0（当前 {dt}）");
+        if (settings.MaxScriptDuration is int msd && msd <= 0)
+            errors.Add($"settings.maxScriptDuration 必须 > 0（当前 {msd}）");
+        if (settings.MaxAiTurns is int mat && mat <= 0)
+            errors.Add($"settings.maxAiTurns 必须 > 0（当前 {mat}）");
+        if (settings.MaxLoopCount is int mlc && mlc <= 0)
+            errors.Add($"settings.maxLoopCount 必须 > 0（当前 {mlc}）");
+        if (settings.MaxPhaseGotoCount is int mpg && mpg <= 0)
+            errors.Add($"settings.maxPhaseGotoCount 必须 > 0（当前 {mpg}）");
+        if (settings.MaxPhaseJumpCount is int mpj && mpj <= 0)
+            errors.Add($"settings.maxPhaseJumpCount 必须 > 0（当前 {mpj}）");
+        if (settings.StepIntervalMs is int si && si < 0)
+            errors.Add($"settings.stepIntervalMs 必须 >= 0（0=不等待，当前 {si}）");
+        if (settings.StepRetry != null)
+        {
+            if (settings.StepRetry.Count < 0)
+                errors.Add($"settings.stepRetry.count 必须 >= 0（当前 {settings.StepRetry.Count}）");
+            if (settings.StepRetry.Interval < 0)
+                errors.Add($"settings.stepRetry.interval 必须 >= 0（当前 {settings.StepRetry.Interval}）");
+        }
+        if (settings.Rerun != null)
+        {
+            if (settings.Rerun.MaxRowRerunCount < 0)
+                errors.Add($"settings.rerun.maxRowRerunCount 必须 >= 0（当前 {settings.Rerun.MaxRowRerunCount}）");
+            if (settings.Rerun.MaxPhaseRerunCount < 0)
+                errors.Add($"settings.rerun.maxPhaseRerunCount 必须 >= 0（当前 {settings.Rerun.MaxPhaseRerunCount}）");
+            if (settings.Rerun.Interval < 0)
+                errors.Add($"settings.rerun.interval 必须 >= 0（当前 {settings.Rerun.Interval}）");
+        }
+        if (settings.OnError != null && !ValidOnErrorValues.Contains(settings.OnError))
+            errors.Add($"settings.onError 必须为 stop/skip/ai-fallback-stop/ai-fallback-skip 之一（当前 '{settings.OnError}'）");
+        if (settings.Viewport != null)
+        {
+            if (settings.Viewport.Width <= 0)
+                errors.Add($"settings.viewport.width 必须 > 0（当前 {settings.Viewport.Width}）");
+            if (settings.Viewport.Height <= 0)
+                errors.Add($"settings.viewport.height 必须 > 0（当前 {settings.Viewport.Height}）");
+        }
+        if (settings.Screenshot != null)
+        {
+            // 3.15 改法 A：schema 已补 compressQuality（3.15 改法 A），此处校验值域 1-100
+            var cq = settings.Screenshot.CompressQuality;
+            if (cq < 1 || cq > 100)
+                errors.Add($"settings.screenshot.compressQuality 必须 1-100（当前 {cq}，验证码识别用 100）");
+        }
     }
 
     /// <summary>

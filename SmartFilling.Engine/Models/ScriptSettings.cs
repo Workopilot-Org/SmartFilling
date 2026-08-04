@@ -16,6 +16,9 @@ public record ScriptSettings
     public int? MaxPhaseJumpCount { get; init; }
     /// <summary>重跑(rerun)配置（决策13/T.14：row_rerun/phase_rerun，脚本级覆盖引擎默认）</summary>
     public RerunOptions? Rerun { get; init; }
+    /// <summary>步骤间固定等待(ms)：每个 step 完成后、下一步开始前等待。0或负数=不等待。脚本级覆盖 EngineOptions.StepIntervalMs。
+    /// 适用范围：改变状态类 action（fill/click/navigate/ai 等）后等待；wait/check/extract/screenshot/goto 跳过（不改变页面状态）；evaluate 参与。</summary>
+    public int? StepIntervalMs { get; init; }
 }
 
 public record Viewport

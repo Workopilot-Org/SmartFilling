@@ -1,4 +1,6 @@
 {
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+  
   "version": 2,
   "scriptId": "gt-13-script-fail",
   "name": "GT13 控制流：script_fail 终止脚本（预期失败）",

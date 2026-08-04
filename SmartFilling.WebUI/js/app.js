@@ -296,7 +296,7 @@ document.getElementById('btn-start-record').addEventListener('click', async () =
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                documentTypeId: docType, taskDescription: taskDesc,
+                taskDescription: taskDesc,
                 username: document.getElementById('username').value,
                 password: document.getElementById('password').value,
                 prerequisiteScriptId: document.getElementById('prerequisite-script').value,
@@ -323,7 +323,8 @@ document.getElementById('btn-start-record').addEventListener('click', async () =
 });
 
 // 保存成功收尾（首次保存 / forceSave 重发共用，避免重发成功后保存框不关、状态不一致）
-function finishSave(scriptName, scriptId) {
+// 用户决策 2：Save 端点 AssociateScript 失败返 200 + warning，前端弹 alert 提示"保存成功但关联失败"
+function finishSave(scriptName, scriptId, warning) {
     addLog(`脚本已保存: ${scriptName} (ID: ${scriptId})`, 'record');
     currentScriptData = null;
     currentTaskId = null;
@@ -335,14 +336,21 @@ function finishSave(scriptName, scriptId) {
     document.getElementById('btn-select-record-files').disabled = false;
     document.getElementById('record-file-input').disabled = false;
     previews.record.stopBtn.classList.add('hidden');
-    alert('脚本保存成功！');
+    if (warning) {
+        alert(warning);  // 关联失败：脚本已存但关联失败，提示用户手工处理
+    } else {
+        alert('脚本保存成功！');
+    }
 }
 
 // 保存脚本
 document.getElementById('btn-save-script').addEventListener('click', async () => {
     const scriptName = document.getElementById('script-name').value.trim();
     if (!scriptName) { alert('请输入脚本名称'); return; }
-    const saveBody = { taskId: currentTaskId, name: scriptName, script: currentScriptData };
+    const saveBody = {
+        taskId: currentTaskId, name: scriptName, script: currentScriptData,
+        documentTypeId: document.getElementById('doc-type-input').value.trim()  // 从文本框取单据类型（SaveScript 不再读脚本字段，由调用方传）
+    };
     try {
         const res = await fetch('/api/record/save', {
             method: 'POST',
@@ -370,7 +378,7 @@ document.getElementById('btn-save-script').addEventListener('click', async () =>
                         return;
                     }
                     const forceData = await forceRes.json();
-                    finishSave(scriptName, forceData.scriptId);
+                    finishSave(scriptName, forceData.scriptId, forceData.warning);
                     return;
                 }
                 return;  // 用户取消强制保存，保持保存框开启
@@ -380,7 +388,7 @@ document.getElementById('btn-save-script').addEventListener('click', async () =>
             throw new Error(msg);
         }
         const data = await res.json();
-        finishSave(scriptName, data.scriptId);
+        finishSave(scriptName, data.scriptId, data.warning);
     } catch (e) { addLog('保存失败: ' + e.message, 'record'); }
 });
 
@@ -462,11 +470,31 @@ document.getElementById('btn-start-chat').addEventListener('click', async () => 
     document.getElementById('fill-file-input').disabled = false;  // 项1 联动恢复：sendChat isComplete 路径保留 fill-file-input 禁用，重启对话时恢复（防永久禁用→选附件无效）
 
     try {
-        await callChatApi({
-            scriptId: docTypeId, message: "用户已打开填报对话，请主动打招呼并引导用户填写。",
+        let result = await callChatApi({
+            documentTypeId: docTypeId, message: "用户已打开填报对话，请主动打招呼并引导用户填写。",
             sessionId: null, attachments: [],
             dataCollectionPrompt: document.getElementById('fill-data-prompt')?.value?.trim() || ''
         });
+
+        // 字段名重复冲突（用户决策 3）：首次请求发现字段名重复→弹 confirm 让用户选「后项覆盖前项」或「取消对话」
+        if (result?.conflict) {
+            const fieldList = result.conflictedFields.join('、');
+            const msg = `字段「${fieldList}」在多个脚本中存在重复。\n\n确定=后项覆盖前项（使用最后一个脚本的字段定义）\n取消=取消对话`;
+            if (confirm(msg)) {
+                // 用户选择后项覆盖：带 mergeStrategy=last-wins 重发，后端按末定义去重不返回 conflict
+                await callChatApi({
+                    documentTypeId: docTypeId, message: "用户已打开填报对话，请主动打招呼并引导用户填写。",
+                    sessionId: null, attachments: [],
+                    dataCollectionPrompt: document.getElementById('fill-data-prompt')?.value?.trim() || '',
+                    mergeStrategy: 'last-wins'
+                });
+            } else {
+                // 用户取消：回退到单据选择
+                document.getElementById('chat-container').classList.add('hidden');
+                document.getElementById('doc-selector').classList.remove('hidden');
+                currentChatSession = null;
+            }
+        }
     } catch { addChatMessage('agent', '你好！我是填报助手。请告诉我需要填写的信息。'); }
     setStatus('idle', '空闲');
 });
@@ -545,6 +573,12 @@ async function callChatApi(requestBody) {
         return { success: false, error: msg };
     }
     const data = await res.json();
+
+    // 字段名重复冲突（仅首次创建会话时，用户决策 3）：不设置 sessionId，返回 conflict 让调用方弹框选「后项覆盖」或「取消」
+    if (data.conflict) {
+        return { conflict: true, conflictedFields: data.conflictedFields };
+    }
+
     currentChatSession.sessionId = data.sessionId;
     if (data.reply) addChatMessage('agent', data.reply);
 
@@ -566,7 +600,7 @@ async function callChatApi(requestBody) {
         btnExec.onclick = async () => {
             btnExec.disabled = true;
             btnExec.textContent = '填报中...';
-            try { await startDynamicFillTask(data.collectedData, data.reply); }
+            try { await startDynamicFillTask(data.collectedData, data.reply, data.initialVars); }
             catch (error) { alert('启动失败: ' + error.message); btnExec.disabled = false; btnExec.textContent = '开始执行填报'; }
         };
         actionDiv.appendChild(btnExec);
@@ -612,7 +646,7 @@ async function sendChat() {
             addChatMessage('agent', `⚠️ ${fillFiles.length - uploaded.length} 个附件上传失败，AI 仅收到其中 ${uploaded.length} 个。`);
         }
         const result = await callChatApi({
-            scriptId: currentChatSession.docType, message, sessionId: currentChatSession.sessionId,
+            documentTypeId: currentChatSession.docType, message, sessionId: currentChatSession.sessionId,
             attachments: uploaded, dataCollectionPrompt: document.getElementById('fill-data-prompt')?.value?.trim() || ''
         });
         // 项1+8：抓 isComplete（callChatApi 数据收集完成时禁用 chatInput/btnSend/btn-select-fill-files，finally 跳过恢复保留其禁用）
@@ -638,7 +672,7 @@ btnSend.addEventListener('click', sendChat);
 chatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendChat(); });
 
 // ========== v2: 填报任务启动（全部走 Worker 远程执行） ==========
-async function startDynamicFillTask(collectedData, summary) {
+async function startDynamicFillTask(collectedData, summary, initialVars) {
     document.getElementById('chat-status-text').textContent = '正在执行填报...';
     const backBtn = document.getElementById('btn-back-to-selector');
     if (backBtn) backBtn.style.display = 'none';
@@ -672,6 +706,17 @@ async function startDynamicFillTask(collectedData, summary) {
         addLog('────────────────────────────', 'fill');
     }
 
+    // 组5 (5.5)：显示初始变量（可变控制变量，与预填充数据并列显示）
+    if (initialVars && Object.keys(initialVars).length > 0) {
+        addLog('────────────────────────────', 'fill');
+        addLog(`📊 初始变量 (${Object.keys(initialVars).length} 项):`, 'fill');
+        for (const [key, value] of Object.entries(initialVars)) {
+            const display = (value !== null && typeof value === 'object') ? JSON.stringify(value) : value;
+            addLog(`   • ${key}: ${display}`, 'fill');
+        }
+        addLog('────────────────────────────', 'fill');
+    }
+
     try {
         // 确保 SignalR 连接就绪，否则先重连（含状态提示，防重启后任务变孤儿）
         if (appConnection.state !== signalR.HubConnectionState.Connected) {
@@ -685,7 +730,8 @@ async function startDynamicFillTask(collectedData, summary) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 documentTypeId: docType,
-                fillData: collectedData
+                fillData: collectedData,
+                initialVars: initialVars  // 组5 (5.5)：透传初始变量（可变控制变量）
             })
         });
         if (!res.ok) {
