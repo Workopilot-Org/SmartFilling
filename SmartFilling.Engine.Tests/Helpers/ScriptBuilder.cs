@@ -13,7 +13,7 @@ public class ScriptBuilder
         string? loopSource = null, int? maxLoopCount = null, string[]? iframe = null,
         string? aiGoal = null, int? maxAiTurns = null,
         int? rowIndexOffset = null, DetectCondition? condition = null, DetectCondition? loopCondition = null,
-        string? onError = null)
+        string? onError = null, LoopElementConfig? loopElement = null)
     {
         _phases.Add(new PhaseNode
         {
@@ -29,7 +29,8 @@ public class ScriptBuilder
             RowIndexOffset = rowIndexOffset,
             Condition = condition,
             LoopCondition = loopCondition,
-            OnError = onError
+            OnError = onError,
+            LoopElement = loopElement  // loop-variable-support 功能2
         });
         return this;
     }

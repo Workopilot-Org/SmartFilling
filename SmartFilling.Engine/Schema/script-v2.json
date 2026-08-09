@@ -161,6 +161,7 @@
         "maxAiTurns": { "type": "integer", "description": "ai phase AI 总轮次预算" },
         "timeout": { "type": "integer", "description": "phase 超时(ms)，超时按 onError 处理" },
         "rowIndexOffset": { "type": "integer", "description": "行索引偏移量" },
+        "loopElement": { "$ref": "#/$defs/loopElement", "description": "DOM 驱动循环配置（功能2，行选择器匹配多元素按行循环）。与 loopSource 互斥" },
         "steps": {
           "type": "array",
           "items": { "$ref": "#/$defs/phaseItem" },
@@ -187,8 +188,23 @@
             }
           },
           "description": "DC14：sequential/ai phase 不设 RowBaselineStack 基线 → check new_row_appears silent 失效，schema 架构挡（allOf 合并 stepNode + detect/condition→NoNewRow——condition 同样依赖基线，须一并挡，否则 step.condition new_row_appears 静默 false 跳过 step）；嵌套 phase 走 phaseNode 递归按各自 type 重评估"
-        }
+        },
+        { "if": { "required": ["loopElement"] }, "then": { "properties": { "type": { "const": "loop" } } }, "description": "决策3项2：loopElement 仅 type=loop 可用（type 约束放 then 里，放 if 里则 if=false 时 then 被跳过=无约束 silent pass）" },
+        { "not": { "required": ["loopElement", "loopSource"] }, "description": "决策3项1：loopElement 与 loopSource 互斥（两者同时 present 时 not 触发拒）" }
       ]
+    },
+
+    "loopElement": {
+      "type": "object",
+      "description": "DOM 驱动循环配置（功能2）：行选择器匹配多元素按行循环，每行注入 {{_rowIndex}} 用于步骤 selector 绝对定位",
+      "required": ["selector"],
+      "additionalProperties": false,
+      "properties": {
+        "selector": { "type": "string", "description": "DOM 元素选择器（行选择器，匹配多元素）。支持 {{vars}}/{{_rowIndex}}（嵌套时含外层行号）" },
+        "storeAs": { "type": "string", "description": "累积目标变量名（可选，非 field.name）。无则纯操作不累积；有则每行数据追加到此数组" },
+        "storeStructure": { "type": "string", "enum": ["table", "array"], "description": "数据结构形态：table（默认，对象数组，step.storeAs 做字段）/ array（标量数组 或 数组数组，值来源唯一）" }
+      },
+      "dependentRequired": { "storeStructure": ["storeAs"] }
     },
 
     "aiPhaseStep": {

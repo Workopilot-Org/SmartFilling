@@ -1,3 +1,5 @@
+using Microsoft.Playwright;
+using NSubstitute;
 using SmartFilling.Engine.Engine;
 using SmartFilling.Engine.Models;
 using SmartFilling.Engine.Tests.Helpers;
@@ -458,4 +460,51 @@ public class LoopPhaseTests
         Assert.True(result.ExecutionLog.Count >= 3, "loop 应迭代 3 行（loopCondition fillData._rowIndex < 3 控制迭代次数，组2 tempChain 使 _rowIndex 可用）");
         Assert.False(result.Vars?.ContainsKey("_rowIndex") ?? false, "_rowIndex 不应进 vars（组2 改存储到 rowData，loop 结束随 rowData 移除不残留）");
     }
+
+    // loop-variable-support 功能2 测试
+
+    [Fact]
+    public async Task ExecuteLoopPhase_LoopElementAndLoopSource_MutuallyExclusive()
+    {
+        // 决策3 代码项11：回放端互斥校验——同时有 loopElement + loopSource 时入口 return PhaseResult(false)
+        var script = new ScriptBuilder()
+            .AddPhase("P1", type: "loop", loopSource: "items", aiGoal: "测试",
+                loopElement: new LoopElementConfig { Selector = "#tr", StoreAs = "data" },
+                steps: [ScriptBuilder.CheckStep(ScriptBuilder.Detect("always"), "nothing")])
+            .Build();
+
+        MockPageFactory.Create(out var page);
+        var engine = new ScriptEngine(_logger, DefaultOptions());
+
+        var result = await engine.ExecuteAsync(script, new(), page);
+
+        Assert.False(result.Success);
+        Assert.Contains("互斥", result.ErrorMessage ?? "");
+    }
+
+    [Fact]
+    public async Task LoopElement_DomCountZero_SucceedsWithEmptyAccumulation()
+    {
+        // domCount=0（selector 匹配 0 元素）→ 0 迭代，任务成功，vars[storeAs] 为空 List
+        // MockPageFactory bodyLocator.CountAsync().Returns(1)——覆盖为 0 测空累积
+        var script = new ScriptBuilder()
+            .AddPhase("P1", type: "loop", aiGoal: "测试",
+                loopElement: new LoopElementConfig { Selector = "#nonexistent", StoreAs = "data", StoreStructure = "table" },
+                steps: [ScriptBuilder.CheckStep(ScriptBuilder.Detect("always"), "nothing")])
+            .Build();
+
+        MockPageFactory.Create(out var page);
+        // 覆盖 CountAsync 返 0（loopElement selector 匹配 0 元素）
+        page.Locator(Arg.Any<string>(), Arg.Any<PageLocatorOptions?>()).CountAsync().Returns(0);
+        var engine = new ScriptEngine(_logger, DefaultOptions());
+
+        var result = await engine.ExecuteAsync(script, new(), page);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        // vars["data"] 应为空 List（domCount=0 → 0 迭代 → 空累积）
+        Assert.NotNull(result.Vars);
+        Assert.True(result.Vars!.TryGetValue("data", out var data), "vars 应含 data 键");
+        Assert.Empty((System.Collections.IList)data!);
+    }
 }
+

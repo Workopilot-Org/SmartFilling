@@ -497,7 +497,8 @@ public class RecordingActionExecutor
         Func<FragileType, string?, bool>? isAcceptedAsIs = null,  // ND7（a-a-4）：acceptAsIs 集合查询回调（_acceptedAsIs 在 RecordingEngine，阶段1 count==0 record-without-execute 用）
         Func<FragileType, string?, bool>? isFragileAccepted = null,  // 待决策1（a-a-4）：acceptFragile 集合查询回调（_acceptedFragile 在 RecordingEngine，阶段0 iframe 脆弱链集合命中 falls-through 用，镜像 isAcceptedAsIs）
         Dictionary<string, string>? recordVarValues = null,  // dreamy F3：缓存引用（caller 传 _recordVarValues，守卫跨步骤复用 + 参数化点填缓存，字典引用直传非回调）
-        List<BizValue>? bizValues = null)  // dreamy D-3：caller 从 args 解析传入（GetObject<List<BizValue>>），E7 阶段6 搜替换
+        List<BizValue>? bizValues = null,  // dreamy D-3：caller 从 args 解析传入（GetObject<List<BizValue>>），E7 阶段6 搜替换
+        LoopElementConfig? loopElement = null)  // loop-variable-support 功能2：loopElement 模式标识，放宽 ParametrizeRowIndex 触发条件（B4）
     {
         var action = step.Action;
         var value = step.Action == "navigate" ? step.Url : step.Value;
@@ -934,7 +935,7 @@ public class RecordingActionExecutor
         // 决策 D3/F①：loop phase 内 + AI 传 rowIndexed=true → 多独立 input（明细每行各一框）selector 行索引参数化。
         // 对齐回放 ScriptEngine loop（组2 改存储：rowData["_rowIndex"]=rowIdx+offset，{{_rowIndex}} 经 ReplaceVars 从 scopeChain 命中 rowData 替换；不写 ctx.Vars）。
         // 多模式：属性优先（@rowindex/@data-row/@data-index）→ 回退位置（tr[N]）；多[数字]=行列分不清 → request_help 兜底（AI 看 OperateResult(false) 调 request_help）。
-        if (loopSource != null && RecordingEngine.GetBool(args, "rowIndexed") == true && extractedSelector != null)
+        if ((loopSource != null || loopElement != null) && RecordingEngine.GetBool(args, "rowIndexed") == true && extractedSelector != null)  // loop-variable-support B4：loopElement 模式也触发 ParametrizeRowIndex
         {
             var mode = args.GetValueOrDefault("rowIndexMode")?.ToString();
             var (parametrized, ambiguous) = ParametrizeRowIndex(extractedSelector, mode);

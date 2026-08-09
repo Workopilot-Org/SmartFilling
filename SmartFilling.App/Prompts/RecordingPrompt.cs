@@ -340,7 +340,7 @@ internal static class RecordingPrompt
         - `phase`：当前 phase 名称
         - `phaseType`：phase 类型（sequential/loop/ai），仅首次传入时需要
         - `phaseAiGoal`：phase 业务目标（**必填**），首次创建 phase 时传入简短目标描述（如「填写合同信息」「上传附件」），用于 AI fallback/ai phase；缺失会导致脚本加载失败
-        - `phaseLoopSource`：loop phase 的循环数据源字段名，仅 loop 类型需要。**写裸字段名（不写 `{{}}`，如 `items` 而非 `{{items}}`）**。**若该字段未注册，传 `phaseFieldType`（table/items/file）+ `phaseFieldLabel` 让代码自动注册；已注册则代码直接用（传了 phaseFieldType/phaseFieldLabel/phaseFieldItems 会被忽略）**；写错会导致 loop 0 迭代、明细行不填
+        - `phaseLoopSource`：loop phase 的循环数据源字段名，仅 loop 类型需要。**写裸字段名（不写 `{{}}`，如 `items` 而非 `{{items}}`）**。可引用已注册字段（fillData）或前序 step 的 storeAs 变量（vars fallback）。未注册字段时代码检查任务描述措辞判断意图（含"新建/创建变量/存数组"=创建新变量不注册字段；含"字段/数据源/从外部传入"=创建新字段走 phaseFieldType；判断不出则问用户）。已注册则代码直接用；写错会导致 loop 0 迭代、明细行不填
         - `phaseFieldType`：loopSource 未注册时自动注册的字段类型，三选一：
           - `table`：明细表（多列），代码注册 bare array（`type=array, uiComponent=table, Fields=[]`），子列由循环内 operate 增量注册（**loop 内至少 operate 一个子列，否则空 loop 保存被拒**）。配 `phaseFieldLabel`
           - `items`：简单值列表（标量数组），代码注册 `type=array, Items=phaseFieldItems`，循环内用 `{{_rowItem}}` 引用当前元素。需配 `phaseFieldItems`
@@ -368,6 +368,33 @@ internal static class RecordingPrompt
         "phaseFieldType": "file",
         "phaseFieldLabel": "附件"
         ```
+
+        **DOM 元素循环（loopElement，功能2）**：当需要逐行遍历页面表格/列表时，传 `phaseLoopElementSelector`（行选择器，如 `#data-table tbody tr`），代码自动按匹配数循环，每行注入 `{{_rowIndex}}` 用于步骤 selector 绝对定位。与 `phaseLoopSource` 互斥，不能同时传。
+        - `phaseLoopElementSelector`：DOM 元素选择器（行选择器，匹配多元素）。代码按匹配数循环，每行执行一次 steps
+        - `phaseLoopElementStoreAs`：累积目标变量名（可选）。每行提取的数据追加到此数组，后续 loopSource 可引用（vars fallback）
+        - `phaseLoopElementStoreStructure`：数据结构形态（可选，`table`/`array`）。`table`（默认）=对象数组，每行 step.storeAs 做字段；`array`=标量数组（一个 step.storeAs）或数组数组（嵌套 loopElement），值来源唯一
+        - `rowIndexed` / `phaseRowIndexOffset` 在 loopElement 场景同样适用：`rowIndexed` 指步骤 selector 含行索引（如 `tr[1]/td[2]`），代码参数化为 `{{_rowIndex}}`；`phaseRowIndexOffset` 用于 1-based 表格偏移
+        - loopElement.selector 禁 ref（AI 直接传 selector），count==0/脆弱时求助选项同 new_row_appears 机制
+        - 嵌套 loopElement：内层 step 要引用外层行号时用 `{{parent._rowIndex}}`（父层行号）、`{{parent.parent._rowIndex}}`（祖父层行号）、`{{parent.fieldName}}`（父行业务字段）。`{{_rowIndex}}` 是当前层行号（被内层遮蔽时用 parent 跨层）。parent 是保留字，不能用作 storeAs/字段名
+
+        **loopElement 示例**：
+        ```json
+        // 提取表格多列数据
+        "phaseLoopElementSelector": "#data-table tbody tr",
+        "phaseLoopElementStoreAs": "tableData",
+        "phaseLoopElementStoreStructure": "table",
+        "phaseRowIndexOffset": 1
+        // steps: extract td:nth-child(1) storeAs=billCode, extract td:nth-child(2) storeAs=amount
+        // 结果: vars["tableData"] = [{billCode, amount}, ...]
+
+        // 提取标量数组
+        "phaseLoopElementSelector": ".tag-item",
+        "phaseLoopElementStoreAs": "tags",
+        "phaseLoopElementStoreStructure": "array"
+        // steps: extract .tag-text storeAs=tag
+        // 结果: vars["tags"] = ["标签1", "标签2", ...]
+        ```
+
         - `parentPhase`：嵌套 phase 的父 phase 名称（顶层 phase 不传）
         - `phaseOnError`：phase 整体失败策略，取值同 onError（stop/skip/ai-fallback-stop/ai-fallback-skip），仅首次创建 phase 时传。多数 phase 不需要。
         - **phase.Condition / phase.LoopCondition 支持 `{{}}` 占位符**：phase 条件（condition/loopCondition）内的 selector/value/keywords/iframe 等字段支持 `{{字段名}}`/`{{变量}}`/`{{_rowIndex}}` 占位符，回放时自动替换（与 step 级 detect 同款）。若含业务值（如 `{{company}}`），手写占位符，代码不自动参数化——phase 条件创建时一次性传入 EnsurePhaseAsync（非 step 逐步操作），不经过 bizValues 搜替换，录制守卫 `!Contains("{{")` 跳过校验原样落盘。（详细规则见操作手册「phase 级字段的变量支持」节。）

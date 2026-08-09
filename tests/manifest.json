@@ -215,6 +215,18 @@
         ]
       },
       "covers": "F/D3：loop(loopSource=attachments) 逐行 upload + selector @rowindex={{_rowIndex}} + filePath={{_path}} 回放（rowIndexOffset=1，验证录制期 ParametrizeRowIndex 产出的 {{_rowIndex}} selector 能正确回放）"
+    },
+    {
+      "file": "29-loop-element-extract.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "loop-variable-support 功能2：loopElement DOM 驱动循环 / storeStructure=table 对象数组 / step.storeAs 写行级 rowData / rowIndexOffset=1 / returnData 验证累积值（3 行 code/amount）"
+    },
+    {
+      "file": "30-loop-element-then-loopsource.json",
+      "category": "deterministic",
+      "expect": "completed",
+      "covers": "loop-variable-support 功能1+功能2 互补：phase1 loopElement array 模式提取标量数组到 vars[tableData] / phase2 loopSource=tableData 经 vars fallback 循环 / {{_rowItem}} 标量引用 / check(page_contains)"
     }
   ]
 }

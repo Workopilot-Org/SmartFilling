@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>loopElement DOM 循环测试页</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; }
+  table { border-collapse: collapse; margin: 10px 0; }
+  th, td { border: 1px solid #ccc; padding: 6px 12px; text-align: left; }
+  th { background: #f0f0f0; }
+  #result { margin-top: 16px; padding: 10px; background: #f5f5f5; min-height: 30px; }
+</style>
+</head>
+<body>
+  <h1>loopElement DOM 循环测试页</h1>
+  <p>静态表格 3 行，loopElement 提取每行 code/amount</p>
+  <table id="data-table">
+    <thead><tr><th>单号</th><th>金额</th></tr></thead>
+    <tbody>
+      <tr><td>B001</td><td>100</td></tr>
+      <tr><td>B002</td><td>200</td></tr>
+      <tr><td>B003</td><td>300</td></tr>
+    </tbody>
+  </table>
+  <div id="result"></div>
+</body>
+</html>

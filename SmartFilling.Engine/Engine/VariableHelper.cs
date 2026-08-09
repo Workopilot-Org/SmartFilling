@@ -40,28 +40,38 @@ public static class VariableHelper
             var key = m.Groups[1].Value;
             var parts = key.Split('.');
 
+            // loop-variable-support 决策10选A′：parent 链扩展（{{parent._rowIndex}}/{{parent.parent._rowIndex}}/{{parent.fieldName}} 沿 scopeChain 跳层引用祖先层）
+            int depth = 0;
+            int startPart = 0;
+            while (startPart < parts.Length && parts[startPart] == "parent")
+            {
+                depth++;
+                startPart++;
+            }
+            if (depth > 0 && startPart >= parts.Length)
+                return m.Value;  // 只有 parent 没有字段，无意义（原样字面输出）
+
             // 改动11：附件属性引用别名 _path/_name/_url → 映射到附件对象 path/name/url key（精确特判三个，不泛化——防 _lastUrl 错查 lastUrl 等系统变量）。
-            // 附件对象结构 {name,path,url}（ConvertAttachmentUrls 产出）不变，仅占位符引用加 _ 前缀 + 映射。
-            var rootKey = parts[0] switch
+            var rootKey = (startPart < parts.Length ? parts[startPart] : "") switch
             {
                 "_path" => "path",
                 "_name" => "name",
                 "_url" => "url",
-                _ => parts[0]
+                _ => (startPart < parts.Length ? parts[startPart] : "")
             };
 
-            // 查找根变量
+            // 查找根变量：从 scopeChain[depth] 开始（depth=0 时现有行为不变，depth>0 时跳过内层 rowData 查祖先层）
             bool found = false;
             object? val = null;
-            foreach (var scope in scopeChain)
+            for (int i = depth; i < scopeChain.Count; i++)
             {
-                if (scope.TryGetValue(rootKey, out var v)) { val = v; found = true; break; }
+                if (scopeChain[i].TryGetValue(rootKey, out var v)) { val = v; found = true; break; }
             }
-            if (!found && vars.TryGetValue(rootKey, out var v2)) { val = v2; found = true; }
+            if (!found && depth == 0 && vars.TryGetValue(rootKey, out var v2)) { val = v2; found = true; }  // vars fallback 只在 depth==0 时（parent 不查 vars）
             if (!found) return m.Value;
 
-            // 逐层取值
-            for (int i = 1; i < parts.Length && val != null; i++)
+            // 逐层取值（R12-3：从 startPart+1 开始，跳过 parent 前缀 + rootKey；原 i=1 硬编码对 parent 链错位）
+            for (int i = startPart + 1; i < parts.Length && val != null; i++)
             {
                 if (val is Dictionary<string, object> dict && dict.TryGetValue(parts[i], out var dv))
                     val = dv;
@@ -88,27 +98,39 @@ public static class VariableHelper
         var key = m.Groups[1].Value;
         var parts = key.Split('.');
 
+        // loop-variable-support 决策10选A′：parent 链扩展（与 ReplaceVars 对称）
+        int depth = 0;
+        int startPart = 0;
+        while (startPart < parts.Length && parts[startPart] == "parent")
+        {
+            depth++;
+            startPart++;
+        }
+        if (depth > 0 && startPart >= parts.Length)
+            return null;  // 只有 parent 没有字段，无意义（返 null 让调用方回退文本替换）
+
         // 改动11：附件属性引用别名 _path/_name/_url → 映射到附件对象 path/name/url key（精确特判三个，与 ReplaceVars 同款，不泛化防 _lastUrl 错查）。
-        var rootKey = parts[0] switch
+        var rootKey = (startPart < parts.Length ? parts[startPart] : "") switch
         {
             "_path" => "path",
             "_name" => "name",
             "_url" => "url",
-            _ => parts[0]
+            _ => (startPart < parts.Length ? parts[startPart] : "")
         };
 
-        // 查找根变量
+        // 查找根变量：从 scopeChain[depth] 开始（depth=0 时现有行为不变，depth>0 时跳过内层查祖先层）
         bool found = false;
         object? val = null;
-        foreach (var scope in scopeChain)
+        for (int i = depth; i < scopeChain.Count; i++)
         {
-            if (scope.TryGetValue(rootKey, out var v)) { val = v; found = true; break; }
+            if (scopeChain[i].TryGetValue(rootKey, out var v)) { val = v; found = true; break; }
         }
-        if (!found && vars.TryGetValue(rootKey, out var v2)) { val = v2; found = true; }
+        if (!found && depth == 0 && vars.TryGetValue(rootKey, out var v2)) { val = v2; found = true; }  // vars fallback 只在 depth==0 时
         if (!found) return null;
 
         // 逐层取值（返回原始对象，不 ToString）；数组逐项 pluck 并 flatMap 摊平一维（改动④）
-        return PluckPath(val, parts, 1, logger, key);
+        // R12-3：PluckPath 起始索引从硬编码 1 改为 startPart+1（跳过 parent 前缀 + rootKey；原 1 对 parent 链错位）
+        return PluckPath(val, parts, startPart + 1, logger, key);
     }
 
     /// <summary>
@@ -153,27 +175,47 @@ public static class VariableHelper
     }
 
     /// <summary>
+    /// 把 loop 数据源原始值归一为 Dictionary 行列表（提取自 GetLoopRows，消除 scopeChain/vars 两处重复 switch）。
+    /// 四分支：强类型 List&lt;Dictionary&gt; / 生产 List&lt;object&gt;(IList) / JsonElement(Array) / 其他→null。
+    /// </summary>
+    private static List<Dictionary<string, object>>? NormalizeRows(object rows) => rows switch
+    {
+        List<Dictionary<string, object>> list => list,                                    // 测试/强类型：行为完全不变
+        System.Collections.IList list => NormalizeItems(list),                            // 生产 List<object>（元素运行时是 Dictionary）
+        JsonElement je when je.ValueKind == JsonValueKind.Array                            // JsonElement（未经入口归一的残留兜底）
+            => NormalizeItems(je.EnumerateArray().Select(NormalizeJsonElement).ToList()),
+        _ => null
+    };
+
+    /// <summary>
     /// 从作用域栈获取 loop 数据源（改动①：放宽类型判断，兼容生产链路多形态）。
     /// 生产链路（App/Worker）经 NormalizeJsonElement 反序列化后产出 List<object>（元素运行时是 Dictionary），
     /// 而非强类型 List<Dictionary>——原 `is List<Dictionary>` 因 C# 泛型不变对 List<object> 恒 false，明细表 loop 0 迭代（P0）。
+    /// loop-variable-support 功能1：加 vars fallback——scopeChain 未命中时查 ctx.Vars（storeAs/initialVars 存入的数组数据）。
+    /// 查找顺序与 ReplaceVars 一致（scopeChain 优先，vars fallback），field name 仍优先（ValidateNameCollisions 已禁重名）。
     /// </summary>
-    public static List<Dictionary<string, object>> GetLoopRows(string? loopSource, List<Dictionary<string, object>> scopeChain)
+    public static List<Dictionary<string, object>> GetLoopRows(
+        string? loopSource,
+        List<Dictionary<string, object>> scopeChain,
+        Dictionary<string, object>? vars = null)
     {
         if (loopSource == null) return [];
 
+        // 1. 先查 scopeChain（原有行为不变）
         foreach (var scope in scopeChain)
         {
             if (!scope.TryGetValue(loopSource, out var rows) || rows == null) continue;
-            var normalized = rows switch
-            {
-                List<Dictionary<string, object>> list => list,                                    // 测试/强类型：行为完全不变
-                System.Collections.IList list => NormalizeItems(list),                            // 生产 List<object>（元素运行时是 Dictionary）
-                JsonElement je when je.ValueKind == JsonValueKind.Array                            // JsonElement（未经入口归一的残留兜底）
-                    => NormalizeItems(je.EnumerateArray().Select(NormalizeJsonElement).ToList()),
-                _ => null
-            };
+            var normalized = NormalizeRows(rows);
             if (normalized != null) return normalized;
         }
+
+        // 2. fallback 查 vars（新增：storeAs/initialVars 存入的数组数据）
+        if (vars != null && vars.TryGetValue(loopSource, out var v) && v != null)
+        {
+            var normalized = NormalizeRows(v);
+            if (normalized != null) return normalized;
+        }
+
         return [];
     }
 

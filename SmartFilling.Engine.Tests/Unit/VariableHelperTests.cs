@@ -267,6 +267,223 @@ public class VariableHelperTests
         Assert.Equal("book", result[1]["_rowItem"]);
     }
 
+    // loop-variable-support 功能1：vars fallback 测试（storeAs/initialVars 存入的数组数据经 ctx.Vars 供 loopSource 引用）
+
+    [Fact]
+    public void GetLoopRows_VarsFallback_ListObject_ReturnsRows()
+    {
+        // 生产形态：List<object>（元素运行时是 Dictionary）存 vars，scopeChain 无此键
+        var rows = new List<object>
+        {
+            new Dictionary<string, object> { { "name", "row1" } },
+            new Dictionary<string, object> { { "name", "row2" } }
+        };
+        var vars = new Dictionary<string, object> { { "tableData", rows } };
+
+        var result = VariableHelper.GetLoopRows("tableData", [], vars);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal("row1", result[0]["name"]);
+        Assert.Equal("row2", result[1]["name"]);
+    }
+
+    [Fact]
+    public void GetLoopRows_VarsFallback_ListDict_ReturnsRows()
+    {
+        // 强类型 List<Dictionary> 存 vars
+        var rows = new List<Dictionary<string, object>>
+        {
+            new() { { "code", "B001" } }
+        };
+        var vars = new Dictionary<string, object> { { "bills", rows } };
+
+        var result = VariableHelper.GetLoopRows("bills", [], vars);
+
+        Assert.Single(result);
+        Assert.Equal("B001", result[0]["code"]);
+    }
+
+    [Fact]
+    public void GetLoopRows_VarsFallback_JsonElementArray_ReturnsRows()
+    {
+        // ⚠️ 生产反序列化路径：storeAs/initialVars 经 STJ 反序列化产出 JsonElement(Array) 形态。
+        // NormalizeRows 的 JsonElement 分支只在此形态触发，强类型构造绕过（test-covers-production-deserialize-path）。
+        using var doc = JsonDocument.Parse("""[{"name":"row1"},{"name":"row2"}]""");
+        var vars = new Dictionary<string, object> { { "tableData", doc.RootElement.Clone() } };
+
+        var result = VariableHelper.GetLoopRows("tableData", [], vars);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal("row1", result[0]["name"]);
+        Assert.Equal("row2", result[1]["name"]);
+    }
+
+    [Fact]
+    public void GetLoopRows_VarsFallback_SimpleArray_WrapsRowItem()
+    {
+        // 标量数组存 vars → 包装 {_rowItem: 标量} 供 loop 内 {{_rowItem}} 引用
+        var vars = new Dictionary<string, object> { { "tags", new List<object> { "a", "b" } } };
+
+        var result = VariableHelper.GetLoopRows("tags", [], vars);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal("a", result[0]["_rowItem"]);
+        Assert.Equal("b", result[1]["_rowItem"]);
+    }
+
+    [Fact]
+    public void GetLoopRows_VarsFallback_NonArray_ReturnsEmpty()
+    {
+        // vars 有键但值非数组 → []（静默返空加可观测，不崩）
+        var vars = new Dictionary<string, object> { { "tableData", "not an array" } };
+
+        var result = VariableHelper.GetLoopRows("tableData", [], vars);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void GetLoopRows_ScopeChainPriority_OverVars()
+    {
+        // scopeChain 优先于 vars：同 key 在两边都有时取 scopeChain 的（field name 不被 vars 遮蔽）
+        var scopeRows = new List<Dictionary<string, object>> { new() { { "src", "scope" } } };
+        var varsRows = new List<Dictionary<string, object>> { new() { { "src", "vars" } } };
+        var scopeChain = new List<Dictionary<string, object>> { new() { { "items", scopeRows } } };
+        var vars = new Dictionary<string, object> { { "items", varsRows } };
+
+        var result = VariableHelper.GetLoopRows("items", scopeChain, vars);
+
+        Assert.Single(result);
+        Assert.Equal("scope", result[0]["src"]);  // scopeChain 优先，非 vars
+    }
+
+    [Fact]
+    public void GetLoopRows_VarsFallback_NullVars_BehaviorUnchanged()
+    {
+        // vars=null 行为完全不变（向后兼容，既有两参数调用）
+        var rows = new List<Dictionary<string, object>> { new() { { "name", "row1" } } };
+        var scopeChain = new List<Dictionary<string, object>> { new() { { "items", rows } } };
+
+        var result = VariableHelper.GetLoopRows("items", scopeChain, null);
+
+        Assert.Single(result);
+        Assert.Equal("row1", result[0]["name"]);
+    }
+
+    [Fact]
+    public void GetLoopRows_VarsFallback_NotFoundInVars_ReturnsEmpty()
+    {
+        // vars 不含此键 → []（不崩）
+        var vars = new Dictionary<string, object> { { "other", "value" } };
+
+        var result = VariableHelper.GetLoopRows("tableData", [], vars);
+
+        Assert.Empty(result);
+    }
+
+    #endregion
+
+    #region ParentSyntax (loop-variable-support 决策10选A′)
+
+    [Fact]
+    public void ParentSyntax_ParentRowIndex_ResolvesOuterLayer()
+    {
+        // {{parent._rowIndex}} 从 scopeChain[1] 取父层行号（跳过内层 rowData）
+        var scopeChain = new List<Dictionary<string, object>>
+        {
+            new() { { "_rowIndex", 2 } },  // 内层（当前层）
+            new() { { "_rowIndex", 5 } }   // 外层（父层）
+        };
+
+        var result = VariableHelper.ReplaceVars("{{parent._rowIndex}}", scopeChain, new());
+
+        Assert.Equal("5", result);  // 从 scopeChain[1] 取父层行号，非 scopeChain[0] 的 2
+    }
+
+    [Fact]
+    public void ParentSyntax_ParentParentRowIndex_ResolvesGrandparentLayer()
+    {
+        // {{parent.parent._rowIndex}} 从 scopeChain[2] 取祖父层行号
+        var scopeChain = new List<Dictionary<string, object>>
+        {
+            new() { { "_rowIndex", 2 } },  // 内层
+            new() { { "_rowIndex", 5 } },  // 父层
+            new() { { "_rowIndex", 10 } }  // 祖父层
+        };
+
+        var result = VariableHelper.ReplaceVars("{{parent.parent._rowIndex}}", scopeChain, new());
+
+        Assert.Equal("10", result);
+    }
+
+    [Fact]
+    public void ParentSyntax_ParentFieldName_ResolvesOuterRowField()
+    {
+        // {{parent.billCode}} 取父行业务字段（不只 _rowIndex，任意字段）
+        var scopeChain = new List<Dictionary<string, object>>
+        {
+            new() { { "_rowIndex", 2 } },  // 内层
+            new() { { "_rowIndex", 5 }, { "billCode", "B001" } }  // 父层
+        };
+
+        var result = VariableHelper.ReplaceVars("{{parent.billCode}}", scopeChain, new());
+
+        Assert.Equal("B001", result);
+    }
+
+    [Fact]
+    public void ParentSyntax_ParentDoesNotFallbackToVars()
+    {
+        // parent 链不查 vars（depth>0 时 vars fallback 不触发）—— scopeChain[depth] 查不到则字面输出，不降级到 vars
+        var scopeChain = new List<Dictionary<string, object>>
+        {
+            new() { { "_rowIndex", 2 } }  // 内层
+        };
+        var vars = new Dictionary<string, object> { { "_rowIndex", 99 } };  // vars 有 _rowIndex 但 parent 不查
+
+        var result = VariableHelper.ReplaceVars("{{parent._rowIndex}}", scopeChain, vars);
+
+        Assert.Equal("{{parent._rowIndex}}", result);  // scopeChain[1] 不存在 → 字面输出（不 fallback vars 的 99）
+    }
+
+    [Fact]
+    public void ParentSyntax_EmptyScopeChain_ReturnsLiteral()
+    {
+        // returnData 执行时 scopeChain 已清空，parent 查不到 → 字面输出（不崩）
+        var result = VariableHelper.ReplaceVars("{{parent._rowIndex}}", [], new());
+
+        Assert.Equal("{{parent._rowIndex}}", result);
+    }
+
+    [Fact]
+    public void ParentSyntax_ResolveRawValue_ParentRowIndex_ReturnsRawObject()
+    {
+        // ResolveRawValue parent 链扩展：返回原始对象（非 ToString）
+        var scopeChain = new List<Dictionary<string, object>>
+        {
+            new() { { "_rowIndex", 2 } },
+            new() { { "_rowIndex", 5 } }
+        };
+
+        var result = VariableHelper.ResolveRawValue("{{parent._rowIndex}}", scopeChain, new());
+
+        Assert.Equal(5, result);  // 原始 int 5（非 "5" 字符串）
+    }
+
+    [Fact]
+    public void ParentSyntax_DepthZero_BehaviorUnchanged()
+    {
+        // depth=0（无 parent 前缀）时行为完全不变（现有逻辑，scopeChain[0] + vars fallback）
+        var scopeChain = new List<Dictionary<string, object>>
+        {
+            new() { { "_rowIndex", 2 } }
+        };
+
+        var result = VariableHelper.ReplaceVars("{{_rowIndex}}", scopeChain, new());
+
+        Assert.Equal("2", result);  // 现有行为：从 scopeChain[0] 取当前层
+    }
+
     #endregion
 
     #region ApplyTransform

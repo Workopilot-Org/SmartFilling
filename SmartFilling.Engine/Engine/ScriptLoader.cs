@@ -287,6 +287,9 @@ public static class ScriptLoader
         // 决策13：then 用法校验（then 必须 action==check；break/continue/row_rerun 限 loop phase）
         ValidateThenUsage(script.Phases, null, errors);
 
+        // loop-variable-support 功能2（决策3 代码项12）：loopElement 用法校验（array 值来源唯一 + loopElement.storeAs 变量名合法性）
+        ValidateLoopElementUsage(script.Phases, errors);
+
         // R4 增强1：detect 专属 check、until 专属 wait 绑定校验（仿 ValidateThenUsage）
         ValidateDetectUntilUsage(script.Phases, errors);
 
@@ -499,8 +502,14 @@ public static class ScriptLoader
                 if (item is StepNode step && step.StoreAs != null)
                     foreach (var n in ExtractStepStoreAsNames(step))
                         names.Add(n);
-                if (item is PhaseNode phase && phase.Steps.Count > 0)
-                    Walk(phase.Steps);
+                if (item is PhaseNode phase)
+                {
+                    // loop-variable-support 功能2（B2）：收集 phase.LoopElement?.StoreAs——否则 ValidateNameCollisions 的 storeAsNames 集不含 loopElement.storeAs（决策3第9项对 loopElement.storeAs silent 失效）+ ValidatePlaceholders 合法占位符集不含（后续 step {{loopElementStoreAs}} 被报"未定义"→脚本加载失败）
+                    if (phase.LoopElement?.StoreAs is string les)
+                        names.Add(les);
+                    if (phase.Steps.Count > 0)
+                        Walk(phase.Steps);
+                }
             }
         }
         Walk(items);
@@ -529,7 +538,7 @@ public static class ScriptLoader
 
     /// <summary>系统保留变量名（④-8：补 lastError；改 public 供录制层复用；FrozenSet 不可变防误改）。
     /// 字段名/storeAs 名禁用这些——字段名进 fillData（scopeChain 末层）会永久遮蔽系统变量；storeAs 名撞这些会遮蔽引擎写入的系统变量。</summary>
-    public static readonly FrozenSet<string> ReservedVarNames = new[] { "_rowIndex", "_lastError", "_lastUrl", "_rowItem", "_path", "_name", "_url", "_lastDialogMessage", "_lastAiFallbackError" }.ToFrozenSet();
+    public static readonly FrozenSet<string> ReservedVarNames = new[] { "_rowIndex", "_lastError", "_lastUrl", "_rowItem", "_path", "_name", "_url", "_lastDialogMessage", "_lastAiFallbackError", "parent" }.ToFrozenSet();  // loop-variable-support R8-3：加 parent 保留字（禁用作 storeAs/字段/initialVars 名），一处覆盖三校验方法（ValidateSingleVarName/ValidateNameCollisions/ValidateInitialVarsNames）
 
     /// <summary>DEC-7（2026-07-13）：系统凭据字段名（username/password）——Worker fillData 硬编码这两个 key 存 payload 传来的用户名/解密密码
     /// （见 PlatformAdapter PlatformWsClient.BuildFillData：fillData["username"]=payload.Username / fillData["password"]=decryptedPassword；协议剥离后 AutomationWsClient 上移 PlatformAdapter，Worker 侧已删）。
@@ -610,6 +619,34 @@ public static class ScriptLoader
             errors.Add($"storeAs 变量名 '{name}' 与系统保留变量冲突 (step: {step.Action} {step.Selector})");
         else if (SystemCredentialKeys.Contains(name))  // DEC-7：storeAs 名禁用 username/password（fillData 系统凭据在 scopeChain 末层优先于 vars → storeAs 被永久遮蔽取错值）
             errors.Add($"storeAs 变量名 '{name}' 是系统凭据字段名（会被 fillData 的 username/password 系统凭据永久遮蔽，静默取错值），请换名 (step: {step.Action} {step.Selector})");
+    }
+
+    /// <summary>loop-variable-support 功能2（决策3 代码项12，D1决策A）：loopElement 用法校验。
+    /// ① array 模式值来源唯一：step.storeAs 标量 或 嵌套 loopElement 数组，二选一且各只能一个（table 模式无约束，可多字段并存）。
+    /// ② loopElement.storeAs 变量名合法性（R1-6：ValidateSingleVarName 只在 ValidateStoreAs 中调，只遍历 step.StoreAs，不检查 phase.LoopElement.StoreAs）。
+    /// JSON Schema 无法表达"0 或 1 个"约束，只能代码校验（代码单层防御）。</summary>
+    private static void ValidateLoopElementUsage(List<PhaseItem> items, List<string> errors)
+    {
+        foreach (var item in items)
+        {
+            if (item is PhaseNode phase)
+            {
+                // ① loopElement.storeAs 变量名合法性（R1-6：ValidateSingleVarName 不覆盖 phase 级 storeAs）
+                if (phase.LoopElement?.StoreAs is string storeAsName)
+                    ValidateSingleVarName(storeAsName, new StepNode { Action = "extract", Name = $"loopElement.{phase.Name}" }, errors);
+                // ② array 模式值来源唯一（step.storeAs 标量 + 嵌套 loopElement 数组，二选一且各只能一个）
+                if (phase.LoopElement is { StoreStructure: "array" })
+                {
+                    int stepStoreAsCount = phase.Steps.Count(s => s is StepNode step && step.StoreAs != null);
+                    int nestedLoopElemCount = phase.Steps.Count(s => s is PhaseNode p && p.LoopElement?.StoreAs != null);
+                    if (stepStoreAsCount + nestedLoopElemCount != 1)
+                        errors.Add($"loopElement.storeStructure=array 模式值来源必须唯一（一个 step.storeAs 标量 或 一个嵌套 loopElement 数组），当前 step.storeAs={stepStoreAsCount} 嵌套loopElement={nestedLoopElemCount}（phase: {phase.Name}）");
+                }
+                // table 模式无约束（可多字段：step.storeAs 标量字段 + 嵌套 loopElement 数组字段并存）
+                if (phase.Steps.Count > 0)
+                    ValidateLoopElementUsage(phase.Steps, errors);
+            }
+        }
     }
 
     /// <summary>组3 (3.11)：校验脚本顶层 initialVars 声明。

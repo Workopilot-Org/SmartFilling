@@ -468,9 +468,14 @@ public class ScriptEngine
     async Task<PhaseResult> ExecuteLoopPhaseAsync(ExecutionContext ctx, ScriptV2 script, int phaseIdx, PhaseNode phase, Dictionary<string, object> fillData)
     {
         ctx.PhaseName = phase.Name;
-        ctx.GoalStack.Push(phase.AiGoal ?? phase.Name);  // 改动6.4：目标链入口 push
+        // loop-variable-support 功能2（决策3 代码项11 + R8-1）：互斥校验 + 形态A分派，前置于 GoalStack.Push（未 push 无须 pop，新方法自管 push/pop）
+        if (phase.LoopElement != null && phase.LoopSource != null)
+            return new PhaseResult(false) { Message = "loopElement 与 loopSource 互斥，不能同时存在" };
+        if (phase.LoopElement != null)
+            return await ExecuteLoopElementPhaseAsync(ctx, script, phaseIdx, phase, fillData);
+        ctx.GoalStack.Push(phase.AiGoal ?? phase.Name);  // 改动6.4：目标链入口 push（loopSource 模式才走到）
         try {
-        var rows = VariableHelper.GetLoopRows(phase.LoopSource, ctx.ScopeChain);
+        var rows = VariableHelper.GetLoopRows(phase.LoopSource, ctx.ScopeChain, ctx.Vars);  // loop-variable-support 功能1：传 ctx.Vars 做 vars fallback（storeAs/initialVars 数组）
         var maxLoopCount = phase.MaxLoopCount ?? script.Settings?.MaxLoopCount ?? _options.MaxLoopCount;
         int rowIdx = 0;
         int rowRerunCount = 0;  // 决策13/T.14：row_rerun 计数（原 rowRetryCount）
@@ -584,129 +589,20 @@ public class ScriptEngine
 
                 if (result?.ControlFlow != null)
                 {
-                    var cf = result.ControlFlow;
-                    switch (cf.Then)
+                    // 决策7选A′（loop-variable-support 波次2.3）：controlFlow 逻辑提取为共享 helper HandleLoopControlFlowAsync，
+                    // helper 内做所有副作用（AiFallback/CleanupSteps/goto 计数/maxRerun/Task.Delay/RemoveAt+Pop/rowIdx--/rowIdx=0/rowRerunCount=0/isRetry/j=si-1），
+                    // caller 只做 goto/return + domCount 重算（PhaseRerun 独有，caller 局部变量 helper 拿不到，在 ExecuteLoopElementPhaseAsync 用）。
+                    // async 不能用 ref 参数（CS1988），被修改的值类型局部变量通过 struct 返回给 caller 更新。
+                    var cfR = await HandleLoopControlFlowAsync(ctx, script, phase, phaseIdx, step, j, result.ControlFlow, fillData, rowData, rowIdx, rowRerunCount, phaseRerunCount, isRetry);
+                    j = cfR.J; rowIdx = cfR.RowIdx; rowRerunCount = cfR.RowRerunCount; phaseRerunCount = cfR.PhaseRerunCount; isRetry = cfR.IsRetry;
+                    switch (cfR.Outcome)
                     {
-                        case "continue":  // 决策13：原 next（下一行 / loop 下一次迭代）
-                            goto NEXT_ITERATION;
-                        case "nothing":  // 决策13：原 continue/default（no-op，继续下一 step）
-                            break;
-                        case "break":
-                            if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);  // S5 H.4.6 break 对称 pop + rowData 守卫
-                            goto LOOP_DONE;
-                        case "row_rerun":  // 决策13：原 loop phase_retry，重跑当前行（MaxRowRerunCount）
-                            foreach (var gk in ctx.GotoCounter.Keys.Where(k => k.StartsWith($"step:{phase.Name}:") || k.StartsWith($"{phaseIdx}:")).ToList())
-                                ctx.GotoCounter.Remove(gk);
-                            rowRerunCount++;
-                            var maxRowRerun = script.Settings?.Rerun?.MaxRowRerunCount ?? _options.Rerun?.MaxRowRerunCount ?? 2;
-                            if (rowRerunCount > maxRowRerun)
-                            {
-                                // 耗尽：走当前 check step 的 onError（决策13：AI 修当前行 / 跳行 / 停）
-                                var rreMsg = VariableHelper.ReplaceVars(cf.Message ?? $"行 {rowIdx} 超过最大重跑次数({maxRowRerun})", ctx.ScopeChain, ctx.Vars);
-                                var rreOnError = GetOnError(step, phase, script);
-                                if (rreOnError is "ai-fallback-stop" or "ai-fallback-skip")
-                                {
-                                    StepResult? rreAi = null;
-                                    try { rreAi = await AiFallbackAsync(ctx, script, phase, phaseIdx, step, fillData, new InvalidOperationException(rreMsg), rreOnError); }
-                                    catch (OperationCanceledException) { throw; }
-                                    catch { rreAi = null; }
-                                    if (rreAi != null) break;  // AI 成功，继续下一 step
-                                    if (rreOnError == "ai-fallback-skip") { goto NEXT_ITERATION; }  // 跳过当前行（RemoveAt+Pop 全由 NEXT_ITERATION L642 统一收尾，镜像 L519 continue；此处行内 RemoveAt 会与 L642 双 RemoveAt 致嵌套 scope 错位）
-                                    if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                                    var rreAiErr = ctx.Vars.TryGetValue("_lastAiFallbackError", out var rreAe) ? rreAe?.ToString() : null;  // 观察③修复：补 AI 失败原因（AiFallbackAsync return null 丢失 ErrorMessage）
-                                    return new PhaseResult(false) { FailedStepIndex = j, Message = $"行 {rowIdx} 重跑耗尽且 AI 失败: {rreMsg}{(string.IsNullOrEmpty(rreAiErr) ? "" : $"（AI 原因: {rreAiErr}）")}" };
-                                }
-                                if (rreOnError == "skip") { goto NEXT_ITERATION; }  // 跳过当前行（RemoveAt+Pop 全由 NEXT_ITERATION L642 统一收尾，镜像 L519 continue；此处行内 RemoveAt 会双 RemoveAt 致嵌套 scope 错位）
-                                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                                return new PhaseResult(false) { FailedStepIndex = j, Message = rreMsg };
-                            }
-                            var rowRerunInterval = script.Settings?.Rerun?.Interval ?? _options.Rerun?.Interval ?? 1000;
-                            await Task.Delay(rowRerunInterval, ctx.Ct);
-                            isRetry = true; rowIdx--;
-                            if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                            goto RETRY_ITERATION;
-                        case "phase_rerun":  // 决策13：重跑整个 loop（MaxPhaseRerunCount）
-                            // 附带修复1：补 goto 键清理（与 row_rerun / sequential phase_rerun 对称；原遗漏致重跑后 goto 计数残留误触 MaxPhaseGotoCount）
-                            foreach (var gk in ctx.GotoCounter.Keys.Where(k => k.StartsWith($"step:{phase.Name}:") || k.StartsWith($"{phaseIdx}:")).ToList())
-                                ctx.GotoCounter.Remove(gk);
-                            phaseRerunCount++;
-                            var maxPhaseRerun = script.Settings?.Rerun?.MaxPhaseRerunCount ?? _options.Rerun?.MaxPhaseRerunCount ?? 2;
-                            if (phaseRerunCount > maxPhaseRerun)
-                            {
-                                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                                return new PhaseResult(false) { FailedStepIndex = j, Message = $"超过最大 phase 重跑次数({maxPhaseRerun})" };
-                            }
-                            var phaseRerunInterval = script.Settings?.Rerun?.Interval ?? _options.Rerun?.Interval ?? 1000;
-                            await Task.Delay(phaseRerunInterval, ctx.Ct);
-                            // 重置行索引与计数，重新开始整个 loop
-                            if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                            rowIdx = 0; rowRerunCount = 0;
-                            goto LOOP_TOP;
-                        case "step_error":  // 决策13：check 检测到业务错误，按本 step onError 4 选项
-                            {
-                                var seMsg = VariableHelper.ReplaceVars(cf.Message ?? "check 检测到业务错误", ctx.ScopeChain, ctx.Vars);
-                                var seOnError = GetOnError(step, phase, script);
-                                if (seOnError == "skip") break;  // 跳过，继续下一 step
-                                if (seOnError is "ai-fallback-stop" or "ai-fallback-skip")
-                                {
-                                    StepResult? seAi = null;
-                                    StepActivity?.Invoke(ctx.TaskId);  // D1：AI 兜底执行前触发（防长 AI fallback 误判卡死，G1-11 覆盖 AI fallback 路径）
-                                    try { seAi = await AiFallbackAsync(ctx, script, phase, phaseIdx, step, fillData, new InvalidOperationException(seMsg), seOnError); }
-                                    catch (OperationCanceledException) { throw; }
-                                    catch { seAi = null; }
-                                    StepActivity?.Invoke(ctx.TaskId);  // D1：AI 兜底执行后触发
-                                    if (seAi != null) break;  // AI 成功，继续下一 step
-                                    if (seOnError == "ai-fallback-skip") break;  // skip 继续
-                                    if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                                    var seAiErr = ctx.Vars.TryGetValue("_lastAiFallbackError", out var seAe) ? seAe?.ToString() : null;  // 观察③修复：补 AI 失败原因
-                                    return new PhaseResult(false) { FailedStepIndex = j, Message = $"{seMsg}{(string.IsNullOrEmpty(seAiErr) ? "" : $"（AI 原因: {seAiErr}）")}" };
-                                }
-                                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                                return new PhaseResult(false) { FailedStepIndex = j, Message = seMsg };
-                            }
-                        case "phase_error":  // 决策13：原 phase_fail
-                            if (cf.CleanupSteps != null)
-                                foreach (var s in cf.CleanupSteps)
-                                    await ExecuteStepWithRetryAndFallbackAsync(ctx, script, phase, phaseIdx, s, -1, fillData);
-                            if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                            return new PhaseResult(false) { FailedStepIndex = j, Message = VariableHelper.ReplaceVars(cf.Message ?? "循环中止", ctx.ScopeChain, ctx.Vars) };
-                        case "phase_success":  // 决策13：补，loop 内检测到成功条件提前结束当前 phase 视为成功（与 sequential HandleControlFlowAsync 对称，原走 default=no-op 不对称）
-                            if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                            return new PhaseResult(true) { Status = "phase_success" };
-                        case "script_success":  // 决策13：新增，loop 内传播脚本成功
-                            if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                            return new PhaseResult(true) { Status = "script_success" };
-                        case "script_fail":
-                            if (cf.CleanupSteps != null)
-                                foreach (var s in cf.CleanupSteps)
-                                    await ExecuteStepWithRetryAndFallbackAsync(ctx, script, phase, phaseIdx, s, -1, fillData);
-                            if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                            return new PhaseResult(false) { Status = "script_fail", Message = VariableHelper.ReplaceVars(cf.Message ?? "脚本失败终止", ctx.ScopeChain, ctx.Vars) };
-                        case "goto":
-                            if (cf.ToPhase == null && cf.ToStep != null)
-                            {
-                                var si = phase.Steps.FindIndex(c => c is StepNode s && s.Name == cf.ToStep);
-                                if (si >= 0)
-                                {
-                                    var stepGotoKey = $"step:{phase.Name}:{cf.ToStep}";
-                                    ctx.GotoCounter[stepGotoKey] = ctx.GotoCounter.GetValueOrDefault(stepGotoKey) + 1;
-                                    var maxGotoLoop = script.Settings?.MaxPhaseGotoCount ?? _options.MaxPhaseGotoCount;
-                                    if (ctx.GotoCounter[stepGotoKey] > maxGotoLoop)
-                                        throw new InvalidOperationException($"goto toStep 死循环: {cf.ToStep}（超过上限 {maxGotoLoop}）");
-                                    j = si - 1;
-                                }
-                                continue;
-                            }
-                            if (cf.ToPhase != null)
-                            {
-                                var localIdx = phase.Steps.FindIndex(c => c is PhaseNode p && p.Name == cf.ToPhase);
-                                if (localIdx >= 0) { j = localIdx - 1; continue; }
-                                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
-                                return new PhaseResult(true) { Type = "goto", ToPhase = cf.ToPhase, ToStep = cf.ToStep };
-                            }
-                            continue;
-                        default:
-                            break;  // nothing/no-op，继续下一 step
+                        case LoopControlFlowOutcome.Normal: break;  // nothing/goto-toStep，继续下一 step（j 已 helper 返回更新；for 循环 j++）
+                        case LoopControlFlowOutcome.Continue: goto NEXT_ITERATION;  // continue（NEXT_ITERATION 做 RemoveAt+Pop + rowRerunCount=0 + rowIdx++）
+                        case LoopControlFlowOutcome.Break: goto LOOP_DONE;  // helper 已做 RemoveAt+Pop
+                        case LoopControlFlowOutcome.RowRerun: goto RETRY_ITERATION;  // helper 已做 RemoveAt+Pop + rowIdx--，RETRY_ITERATION rowIdx++
+                        case LoopControlFlowOutcome.PhaseRerun: goto LOOP_TOP;  // helper 已做 RemoveAt+Pop + rowIdx=0 + rowRerunCount=0
+                        case LoopControlFlowOutcome.Return: return cfR.ReturnResult!;  // helper 已做 RemoveAt+Pop + AiFallback/CleanupSteps
                     }
                 }
                 await ApplyStepIntervalAsync(ctx, script, step.Action);
@@ -726,6 +622,360 @@ public class ScriptEngine
     LOOP_DONE:
         return new PhaseResult(true);
         } finally { ctx.GoalStack.Pop(); }  // 改动6.4：目标链出口 pop
+    }
+
+    /// <summary>
+    /// loop phase controlFlow 共享 helper（决策7选A′，loop-variable-support 波次2.3提取）。
+    /// 现有 ExecuteLoopPhaseAsync + 新 ExecuteLoopElementPhaseAsync 都调用。
+    /// helper 内做所有副作用（AiFallback/CleanupSteps/goto 计数/maxRerun/Task.Delay/RemoveAt+Pop/rowIdx--/rowIdx=0/rowRerunCount=0/isRetry/j=si-1），
+    /// caller 只做 goto/return + domCount 重算（PhaseRerun 独有，caller 局部变量 helper 拿不到）。
+    /// 纯重构，现有 loop 行为不变（有测试覆盖）。R13-5选项A：helper 镜像现有 switch case 内副作用，caller 极简。
+    /// </summary>
+    private enum LoopControlFlowOutcome { Normal, Continue, Break, RowRerun, PhaseRerun, Return }
+
+    /// <summary>helper 返回值：outcome + returnResult + 被 helper 修改的 caller 局部变量（async 不能用 ref 参数 CS1988，用 struct 返回）。</summary>
+    private record struct LoopControlFlowResult(
+        LoopControlFlowOutcome Outcome,
+        PhaseResult? ReturnResult,
+        int J,
+        int RowIdx,
+        int RowRerunCount,
+        int PhaseRerunCount,
+        bool IsRetry);
+
+    private async Task<LoopControlFlowResult> HandleLoopControlFlowAsync(
+        ExecutionContext ctx, ScriptV2 script, PhaseNode phase, int phaseIdx, StepNode step, int j,
+        ControlFlowResult cf,
+        Dictionary<string, object> fillData,
+        Dictionary<string, object>? rowData, int rowIdx,
+        int rowRerunCount, int phaseRerunCount, bool isRetry)
+    {
+        // async 方法不能用 ref 参数（CS1988），被修改的值类型局部变量（j/rowIdx/rowRerunCount/phaseRerunCount/isRetry）通过 struct 返回给 caller。
+        // local function 打包当前局部变量为返回值（捕获局部变量合法，async 方法内 local function 可捕获）。
+        LoopControlFlowResult R(LoopControlFlowOutcome o, PhaseResult? p) => new(o, p, j, rowIdx, rowRerunCount, phaseRerunCount, isRetry);
+
+        switch (cf.Then)
+        {
+            case "continue":  // 下一行 / loop 下一次迭代
+                return R(LoopControlFlowOutcome.Continue, null);  // caller goto NEXT_ITERATION（做 RemoveAt+Pop + rowRerunCount=0 + rowIdx++）
+            case "nothing":  // no-op，继续下一 step
+                return R(LoopControlFlowOutcome.Normal, null);
+            case "break":
+                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                return R(LoopControlFlowOutcome.Break, null);  // caller goto LOOP_DONE
+            case "row_rerun":  // 重跑当前行（MaxRowRerunCount）
+                foreach (var gk in ctx.GotoCounter.Keys.Where(k => k.StartsWith($"step:{phase.Name}:") || k.StartsWith($"{phaseIdx}:")).ToList())
+                    ctx.GotoCounter.Remove(gk);
+                rowRerunCount++;
+                var maxRowRerun = script.Settings?.Rerun?.MaxRowRerunCount ?? _options.Rerun?.MaxRowRerunCount ?? 2;
+                if (rowRerunCount > maxRowRerun)
+                {
+                    var rreMsg = VariableHelper.ReplaceVars(cf.Message ?? $"行 {rowIdx} 超过最大重跑次数({maxRowRerun})", ctx.ScopeChain, ctx.Vars);
+                    var rreOnError = GetOnError(step, phase, script);
+                    if (rreOnError is "ai-fallback-stop" or "ai-fallback-skip")
+                    {
+                        StepResult? rreAi = null;
+                        try { rreAi = await AiFallbackAsync(ctx, script, phase, phaseIdx, step, fillData, new InvalidOperationException(rreMsg), rreOnError); }
+                        catch (OperationCanceledException) { throw; }
+                        catch { rreAi = null; }
+                        if (rreAi != null) return R(LoopControlFlowOutcome.Normal, null);  // AI 成功，继续下一 step
+                        if (rreOnError == "ai-fallback-skip") return R(LoopControlFlowOutcome.Continue, null);  // 跳过当前行（caller goto NEXT_ITERATION 做 RemoveAt+Pop）
+                        if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                        var rreAiErr = ctx.Vars.TryGetValue("_lastAiFallbackError", out var rreAe) ? rreAe?.ToString() : null;
+                        return R(LoopControlFlowOutcome.Return, new PhaseResult(false) { FailedStepIndex = j, Message = $"行 {rowIdx} 重跑耗尽且 AI 失败: {rreMsg}{(string.IsNullOrEmpty(rreAiErr) ? "" : $"（AI 原因: {rreAiErr}）")}" });
+                    }
+                    if (rreOnError == "skip") return R(LoopControlFlowOutcome.Continue, null);  // 跳过当前行
+                    if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                    return R(LoopControlFlowOutcome.Return, new PhaseResult(false) { FailedStepIndex = j, Message = rreMsg });
+                }
+                var rowRerunInterval = script.Settings?.Rerun?.Interval ?? _options.Rerun?.Interval ?? 1000;
+                await Task.Delay(rowRerunInterval, ctx.Ct);
+                isRetry = true; rowIdx--;
+                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                return R(LoopControlFlowOutcome.RowRerun, null);  // caller goto RETRY_ITERATION（rowIdx++）
+            case "phase_rerun":  // 重跑整个 loop（MaxPhaseRerunCount）
+                foreach (var gk in ctx.GotoCounter.Keys.Where(k => k.StartsWith($"step:{phase.Name}:") || k.StartsWith($"{phaseIdx}:")).ToList())
+                    ctx.GotoCounter.Remove(gk);
+                phaseRerunCount++;
+                var maxPhaseRerun = script.Settings?.Rerun?.MaxPhaseRerunCount ?? _options.Rerun?.MaxPhaseRerunCount ?? 2;
+                if (phaseRerunCount > maxPhaseRerun)
+                {
+                    if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                    return R(LoopControlFlowOutcome.Return, new PhaseResult(false) { FailedStepIndex = j, Message = $"超过最大 phase 重跑次数({maxPhaseRerun})" });
+                }
+                var phaseRerunInterval = script.Settings?.Rerun?.Interval ?? _options.Rerun?.Interval ?? 1000;
+                await Task.Delay(phaseRerunInterval, ctx.Ct);
+                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                rowIdx = 0; rowRerunCount = 0;
+                return R(LoopControlFlowOutcome.PhaseRerun, null);  // caller goto LOOP_TOP（caller 做 domCount 重算）
+            case "step_error":  // check 检测到业务错误，按本 step onError 4 选项
+            {
+                var seMsg = VariableHelper.ReplaceVars(cf.Message ?? "check 检测到业务错误", ctx.ScopeChain, ctx.Vars);
+                var seOnError = GetOnError(step, phase, script);
+                if (seOnError == "skip") return R(LoopControlFlowOutcome.Normal, null);  // 跳过，继续下一 step
+                if (seOnError is "ai-fallback-stop" or "ai-fallback-skip")
+                {
+                    StepResult? seAi = null;
+                    StepActivity?.Invoke(ctx.TaskId);  // D1：AI 兜底执行前触发
+                    try { seAi = await AiFallbackAsync(ctx, script, phase, phaseIdx, step, fillData, new InvalidOperationException(seMsg), seOnError); }
+                    catch (OperationCanceledException) { throw; }
+                    catch { seAi = null; }
+                    StepActivity?.Invoke(ctx.TaskId);  // D1：AI 兜底执行后触发
+                    if (seAi != null) return R(LoopControlFlowOutcome.Normal, null);  // AI 成功，继续下一 step
+                    if (seOnError == "ai-fallback-skip") return R(LoopControlFlowOutcome.Normal, null);  // skip 继续
+                    if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                    var seAiErr = ctx.Vars.TryGetValue("_lastAiFallbackError", out var seAe) ? seAe?.ToString() : null;
+                    return R(LoopControlFlowOutcome.Return, new PhaseResult(false) { FailedStepIndex = j, Message = $"{seMsg}{(string.IsNullOrEmpty(seAiErr) ? "" : $"（AI 原因: {seAiErr}）")}" });
+                }
+                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                return R(LoopControlFlowOutcome.Return, new PhaseResult(false) { FailedStepIndex = j, Message = seMsg });
+            }
+            case "phase_error":
+                if (cf.CleanupSteps != null)
+                    foreach (var s in cf.CleanupSteps)
+                        await ExecuteStepWithRetryAndFallbackAsync(ctx, script, phase, phaseIdx, s, -1, fillData);
+                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                return R(LoopControlFlowOutcome.Return, new PhaseResult(false) { FailedStepIndex = j, Message = VariableHelper.ReplaceVars(cf.Message ?? "循环中止", ctx.ScopeChain, ctx.Vars) });
+            case "phase_success":
+                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                return R(LoopControlFlowOutcome.Return, new PhaseResult(true) { Status = "phase_success" });
+            case "script_success":
+                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                return R(LoopControlFlowOutcome.Return, new PhaseResult(true) { Status = "script_success" });
+            case "script_fail":
+                if (cf.CleanupSteps != null)
+                    foreach (var s in cf.CleanupSteps)
+                        await ExecuteStepWithRetryAndFallbackAsync(ctx, script, phase, phaseIdx, s, -1, fillData);
+                if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                return R(LoopControlFlowOutcome.Return, new PhaseResult(false) { Status = "script_fail", Message = VariableHelper.ReplaceVars(cf.Message ?? "脚本失败终止", ctx.ScopeChain, ctx.Vars) });
+            case "goto":
+                if (cf.ToPhase == null && cf.ToStep != null)
+                {
+                    var si = phase.Steps.FindIndex(c => c is StepNode s && s.Name == cf.ToStep);
+                    if (si >= 0)
+                    {
+                        var stepGotoKey = $"step:{phase.Name}:{cf.ToStep}";
+                        ctx.GotoCounter[stepGotoKey] = ctx.GotoCounter.GetValueOrDefault(stepGotoKey) + 1;
+                        var maxGotoLoop = script.Settings?.MaxPhaseGotoCount ?? _options.MaxPhaseGotoCount;
+                        if (ctx.GotoCounter[stepGotoKey] > maxGotoLoop)
+                            throw new InvalidOperationException($"goto toStep 死循环: {cf.ToStep}（超过上限 {maxGotoLoop}）");
+                        j = si - 1;
+                    }
+                    return R(LoopControlFlowOutcome.Normal, null);  // caller break（继续下一 step，j 已 helper 改；for 循环 j++）
+                }
+                if (cf.ToPhase != null)
+                {
+                    var localIdx = phase.Steps.FindIndex(c => c is PhaseNode p && p.Name == cf.ToPhase);
+                    if (localIdx >= 0) { j = localIdx - 1; return R(LoopControlFlowOutcome.Normal, null); }
+                    if (rowData != null && ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); if (rowData != null) PopRowCountStack(ctx);
+                    return R(LoopControlFlowOutcome.Return, new PhaseResult(true) { Type = "goto", ToPhase = cf.ToPhase, ToStep = cf.ToStep });
+                }
+                return R(LoopControlFlowOutcome.Normal, null);  // 都不匹配，继续下一 step
+            default:
+                return R(LoopControlFlowOutcome.Normal, null);  // nothing/no-op
+        }
+    }
+
+    /// <summary>
+    /// loopElement DOM 驱动循环（loop-variable-support 功能2，形态A 独立方法，决策3 形态A）。
+    /// phase.LoopElement 非 null 时由 ExecuteLoopPhaseAsync 入口分派到此。与 LoopSource 互斥（入口已校验）。
+    /// 决策1：step.storeAs 写行级 rowData（非 ctx.Vars），迭代结束追加到 vars[loopElement.storeAs]。
+    /// 决策7选A′：controlFlow 调共享 helper HandleLoopControlFlowAsync。
+    /// 决策8选A：嵌套 PhaseNode step 走 ExecuteNestedPhaseAsync（镜像现有 loop L533-552）。
+    /// NB5-1选A：baseRowCount 每轮重算（TryFindNewRowAppearsNode + 无则跳过）。
+    /// R7-1：loopElement.Selector 须 ReplaceVars 后 CountAsync（嵌套含 {{_rowIndex}}(外层) 不替换则 domCount=0 silent 空累积）。
+    /// R12-1：lastStoreAsName 用 ExtractStepStoreAsNames（非 ToString，JsonElement 归一化）。
+    /// R12-4：loopCondition 检查（每轮 while 顶部，支持 loopElement+loopCondition 共存）。
+    /// R12-5：PhaseRerun caller 重算 domCount（DOM 可能已变）。
+    /// R13-1：超限 return failed（非 while 条件退出 success）。
+    /// T10-1：storeStructure null 默认 "table"（否则 switch 不匹配 silent 空累积）。
+    /// </summary>
+    private async Task<PhaseResult> ExecuteLoopElementPhaseAsync(ExecutionContext ctx, ScriptV2 script, int phaseIdx, PhaseNode phase, Dictionary<string, object> fillData)
+    {
+        var loopElement = phase.LoopElement!;  // R9-14：入口已校验非 null（形态A 分派），C# 编译器不传播 null 分析到新方法内，须局部变量 + null-forgiving
+        var maxLoopCount = phase.MaxLoopCount ?? script.Settings?.MaxLoopCount ?? _options.MaxLoopCount;
+        ctx.GoalStack.Push(phase.AiGoal ?? phase.Name);  // R5-2：AI fallback goalChain 依赖
+        try
+        {
+            var frame = FrameResolver.ResolveChain(ctx.ActivePage, IframeChainMerger.Resolve(null, phase.Iframe), ctx.ScopeChain, ctx.Vars);
+            // R7-1：嵌套场景内层 selector 含 {{_rowIndex}}(外层) 不替换则 domCount=0 silent 空累积（与现有 loop new_row_appears tableSel L514 ReplaceVars 对称）
+            var resolvedSelector = VariableHelper.ReplaceVars(loopElement.Selector, ctx.ScopeChain, ctx.Vars);
+            int domCount;
+            try { domCount = await frame.Locator(resolvedSelector).CountAsync(); }
+            catch (Exception ex) { _logger.LogWarning($"loopElement '{phase.Name}' selector 计数失败: {ex.Message}"); domCount = 0; }
+
+            int rowIdx = 0;
+            int rowRerunCount = 0;
+            int phaseRerunCount = 0;
+            bool isRetry = false;
+
+            // 累积容器初始化（table/array 统一 List<object>：table 装对象 Dictionary、array 装标量或内层数组）
+            if (loopElement.StoreAs != null)
+                ctx.Vars[loopElement.StoreAs] = new List<object>();
+
+            LOOP_TOP:
+            while (rowIdx < domCount)
+            {
+                ctx.Ct.ThrowIfCancellationRequested();
+                // R13-1：超 maxLoopCount 即失败（镜像现有 loop L486-487），不从 while 条件静默退出——原 `while (rowIdx < domCount && rowIdx < maxLoopCount)` 超限退出走 return success = silent 截断丢数据
+                if (rowIdx >= maxLoopCount)
+                    return new PhaseResult(false) { FailedStepIndex = -1, Message = $"loopElement '{phase.Name}' 超过最大循环次数 {maxLoopCount}（DOM 元素 {domCount}）" };
+
+                var rowIdxValue = rowIdx + (phase.RowIndexOffset ?? 0);
+                var rowData = new Dictionary<string, object> { ["_rowIndex"] = rowIdxValue };
+
+                // NB5-1选A：tempChain（与现有 loop L495-497 一致，loopCondition + baseRowCount 共用，不写 ctx.Vars/不 Insert ctx.ScopeChain）
+                var tempChain = ctx.ScopeChain
+                    .Prepend(new Dictionary<string, object> { ["_rowIndex"] = rowIdxValue })
+                    .ToList();
+
+                // R12-4（用户选B）：loopCondition 检查（每轮 while 顶部，支持 loopElement+loopCondition 共存，镜像现有 loop L499-506）
+                if (!isRetry && phase.LoopCondition != null)
+                {
+                    bool loopCond;
+                    try { loopCond = await _detectEvaluator.EvaluateAsync(phase.LoopCondition, ctx.ActivePage, script, phase.Iframe, ctx.Vars, tempChain, ctx.RowBaselineStack); }
+                    catch (Exception ex) { _logger.LogWarning($"Phase {phase.Name} loopCondition 检测失败: {ex.Message}"); loopCond = false; }
+                    if (!loopCond) break;
+                }
+                isRetry = false;
+
+                // NB5-1选A：baseRowCount 每轮重算（TryFindNewRowAppearsNode + 无则跳过 CountAsync，避免无谓 DOM 查询）
+                var newRowDetect = TryFindNewRowAppearsNode(phase.Steps);
+                int baseRowCount = 0;
+                if (newRowDetect != null)
+                {
+                    var newTableSel = VariableHelper.ReplaceVars(newRowDetect.Selector ?? "", tempChain, ctx.Vars);
+                    var newTableFrame = FrameResolver.ResolveChain(ctx.ActivePage, IframeChainMerger.Resolve(newRowDetect.Iframe, phase.Iframe), tempChain, ctx.Vars);
+                    try { baseRowCount = await newTableFrame.Locator(newTableSel!).CountAsync(); }
+                    catch { baseRowCount = 0; }
+                }
+
+                ctx.ScopeChain.Insert(0, rowData);
+                PushRowCountStack(ctx, baseRowCount);
+
+                var lastStoreAsName = "";  // R12-1：捕获最后一个带 storeAs 的 step 名（array 标量来源用）
+                for (int j = 0; j < phase.Steps.Count; j++)
+                {
+                    ctx.Ct.ThrowIfCancellationRequested();
+
+                    // 决策8选A：嵌套 PhaseNode 分派（镜像现有 loop L533-552 + goto/script_success/script_fail 传播）
+                    if (phase.Steps[j] is PhaseNode nestedPhase)
+                    {
+                        var savedPhaseName = ctx.PhaseName;
+                        var nestedResult = await ExecuteNestedPhaseAsync(ctx, script, j, nestedPhase, fillData);
+                        ctx.PhaseName = savedPhaseName;
+                        if (nestedResult?.Type == "goto")
+                        {
+                            var targetIdx = phase.Steps.FindIndex(c => c is PhaseNode p && p.Name == nestedResult.ToPhase);
+                            if (targetIdx >= 0) { j = targetIdx - 1; continue; }
+                            if (ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); PopRowCountStack(ctx);
+                            return nestedResult;
+                        }
+                        if (nestedResult?.Status == "script_fail" || nestedResult?.Status == "script_success")
+                        {
+                            if (ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); PopRowCountStack(ctx);
+                            return nestedResult;
+                        }
+                        continue;
+                    }
+
+                    var step = (StepNode)phase.Steps[j];
+                    if (!await ShouldExecuteStepAsync(ctx, script, phase, step)) continue;
+
+                    StepResult? result;
+                    try
+                    {
+                        StepActivity?.Invoke(ctx.TaskId);
+                        result = await ExecuteStepWithRetryAndFallbackAsync(ctx, script, phase, phaseIdx, step, j, fillData);
+                        StepActivity?.Invoke(ctx.TaskId);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        if (IsBrowserCrashException(ex)) throw;
+                        var phaseOnError = GetOnError(phase, script);
+                        if (phaseOnError == "skip")
+                        {
+                            _logger.LogWarning($"LoopElement phase step 失败跳过 | phase={phase.Name} step={step.Description} error={ex.Message}");
+                            continue;
+                        }
+                        if (ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); PopRowCountStack(ctx);
+                        return new PhaseResult(false) { Message = ex.Message, FailedStepIndex = j };
+                    }
+                    if (step.StoreAs != null && result?.Value != null)
+                    {
+                        // R12-1：step.StoreAs 是 object?，JSON 加载后是 JsonElement(String)，.ToString() 返含引号 raw JSON（与 StoreVars 归一化后无引号 key 不匹配）→ array 模式 TryGetValue 兜底失败 → silent 空数组。用 ExtractStepStoreAsNames（与 CollectAllStoreAsNames/ValidateStoreAs 同源，已处理三形态）。
+                        lastStoreAsName = ScriptLoader.ExtractStepStoreAsNames(step).LastOrDefault() ?? "";
+                        // 决策1：loopElement 模式下 StoreVars 写行级 rowData（非 ctx.Vars），迭代结束追加到 vars[loopElement.storeAs]
+                        if (loopElement.StoreAs != null)
+                            VariableHelper.StoreVars(rowData, step.StoreAs, result.Value);
+                        else
+                            VariableHelper.StoreVars(ctx.Vars, step.StoreAs, result.Value);  // 无 loopElement.storeAs：写 vars（兼容）
+                    }
+
+                    AccumulateAiStats(ctx, result);
+
+                    if (result?.ControlFlow != null)
+                    {
+                        // 决策7选A′：controlFlow 调共享 helper（R13-5选项A：helper 内做所有副作用，caller 只 goto/return + domCount 重算）
+                        var cfR = await HandleLoopControlFlowAsync(ctx, script, phase, phaseIdx, step, j, result.ControlFlow, fillData, rowData, rowIdx, rowRerunCount, phaseRerunCount, isRetry);
+                        j = cfR.J; rowIdx = cfR.RowIdx; rowRerunCount = cfR.RowRerunCount; phaseRerunCount = cfR.PhaseRerunCount; isRetry = cfR.IsRetry;
+                        switch (cfR.Outcome)
+                        {
+                            case LoopControlFlowOutcome.Normal: break;  // nothing/goto-toStep，继续下一 step
+                            case LoopControlFlowOutcome.Continue: goto NEXT_ITERATION;
+                            case LoopControlFlowOutcome.Break: goto LOOP_DONE;
+                            case LoopControlFlowOutcome.RowRerun: goto RETRY_ITERATION;
+                            case LoopControlFlowOutcome.PhaseRerun:
+                                // 重置累积容器（phase_rerun = 重跑整个 loop，旧累积数据应清空，否则数据翻倍）
+                                if (loopElement.StoreAs != null)
+                                    ctx.Vars[loopElement.StoreAs] = new List<object>();
+                                // R12-5（用户选方式1）：重算 domCount（DOM 可能已变）。frame/resolvedSelector 不需重算（phase.Iframe 固定 + helper 已 RemoveAt+Pop 回退 + Vars 累积不影响 frame 解析）
+                                domCount = await frame.Locator(resolvedSelector).CountAsync();
+                                goto LOOP_TOP;
+                            case LoopControlFlowOutcome.Return:
+                                return cfR.ReturnResult!;  // helper 已做 RemoveAt+Pop + AiFallback/CleanupSteps
+                        }
+                    }
+                    await ApplyStepIntervalAsync(ctx, script, step.Action);
+                }
+
+                // 累积（step 循环后；RemoveAt+Pop 在 NEXT_ITERATION 统一做，正常流程 fall through，Continue goto 跳过累积直接到 NEXT_ITERATION）
+                if (loopElement.StoreAs != null)
+                {
+                    var accumList = (System.Collections.IList)ctx.Vars[loopElement.StoreAs];
+                    var ss = loopElement.StoreStructure ?? "table";  // T10-1：null 默认 "table"（否则 switch 不匹配 silent 空累积）
+                    switch (ss)
+                    {
+                        case "table":  // 方案B 搬运：嵌套 loopElement 累积挂行对象字段 + Add rowData
+                            foreach (var nested in phase.Steps.OfType<PhaseNode>())
+                                if (nested.LoopElement?.StoreAs is string innerStoreAs && ctx.Vars.TryGetValue(innerStoreAs, out var innerArr))
+                                    rowData[innerStoreAs] = innerArr;
+                            rowData.Remove("_rowIndex");
+                            accumList.Add(rowData);
+                            break;
+                        case "array":  // 优先嵌套 loopElement 累积数组（多维），回退 step.storeAs 标量
+                            bool addedFromNested = false;
+                            foreach (var nested in phase.Steps.OfType<PhaseNode>())
+                                if (nested.LoopElement?.StoreAs is string innerStoreAs && ctx.Vars.TryGetValue(innerStoreAs, out var innerArr))
+                                { accumList.Add(innerArr); addedFromNested = true; }
+                            if (!addedFromNested && rowData.TryGetValue(lastStoreAsName, out var itemValue))  // R5-1：TryGetValue 兜底防 KeyNotFound
+                                accumList.Add(itemValue);
+                            break;
+                    }
+                }
+
+            NEXT_ITERATION:
+                rowRerunCount = 0;
+                if (ctx.ScopeChain.Count > 1) ctx.ScopeChain.RemoveAt(0); PopRowCountStack(ctx);  // 正常流程 + Continue 都走此清理（Continue goto 跳过累积直接到此）
+
+            RETRY_ITERATION:
+                rowIdx++;
+            }
+
+        LOOP_DONE:
+            return new PhaseResult(true);
+        }
+        finally { ctx.GoalStack.Pop(); }  // R5-2：与现有 ExecuteLoopPhaseAsync L728 对称
     }
 
     async Task<PhaseResult?> ExecuteAiPhaseAsync(ExecutionContext ctx, ScriptV2 script, int phaseIdx, PhaseNode phase, Dictionary<string, object> fillData)

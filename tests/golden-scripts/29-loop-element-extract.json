@@ -1,0 +1,35 @@
+{
+  "$schema": "../../SmartFilling.Engine/Schema/script-v2.json",
+
+  "version": 2,
+  "scriptId": "gt-29-loop-element-extract",
+  "name": "GT29 loopElement 提取表格（table 模式 -> returnData 对象数组）",
+  "description": "loopElement DOM 驱动循环 / storeStructure=table / step.storeAs 写行级 rowData / returnData 验证累积值",
+  "fields": [],
+  "phases": [
+    {
+      "kind": "phase",
+      "name": "goto-table",
+      "type": "sequential",
+      "aiGoal": "打开 loopElement 测试页",
+      "steps": [
+        { "kind": "step", "name": "goto", "action": "navigate", "url": "http://localhost:8088/loop-element.html" }
+      ]
+    },
+    {
+      "kind": "phase",
+      "name": "extract-rows",
+      "type": "loop",
+      "loopElement": { "selector": "#data-table tbody tr", "storeAs": "tableData", "storeStructure": "table" },
+      "rowIndexOffset": 1,
+      "aiGoal": "逐行提取表格 code/amount 到 tableData 数组",
+      "steps": [
+        { "kind": "step", "name": "extract-code", "action": "extract", "selector": "#data-table tbody tr:nth-child({{_rowIndex}}) td:nth-child(1)", "storeAs": "code", "property": "textContent" },
+        { "kind": "step", "name": "extract-amount", "action": "extract", "selector": "#data-table tbody tr:nth-child({{_rowIndex}}) td:nth-child(2)", "storeAs": "amount", "property": "textContent" }
+      ]
+    }
+  ],
+  "returnData": {
+    "rows": "{{tableData}}"
+  }
+}
