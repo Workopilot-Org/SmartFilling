@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 using SmartFilling.Engine.Logging;
@@ -15,17 +16,19 @@ public class StepExecutor
     private readonly AiActionExecutor? _aiActionExecutor;
     private readonly ITaskProgressReporter? _reporter;  // #4：ai action 失败推前端 ReceiveLog
     private readonly CaptchaService? _captchaService;
+    private readonly HttpClient _httpClient;
 
-    public StepExecutor(DetectEvaluator detectEvaluator, EngineOptions options, ILogger logger, CaptchaService? captchaService = null)
+    public StepExecutor(DetectEvaluator detectEvaluator, EngineOptions options, ILogger logger, CaptchaService? captchaService = null, HttpClient? httpClient = null)
     {
         _detectEvaluator = detectEvaluator;
         _options = options;
         _logger = logger;
         _captchaService = captchaService;
+        _httpClient = httpClient ?? new HttpClient();
     }
 
-    public StepExecutor(DetectEvaluator detectEvaluator, EngineOptions options, ILogger logger, AiActionExecutor aiActionExecutor, ITaskProgressReporter? reporter = null, CaptchaService? captchaService = null)
-        : this(detectEvaluator, options, logger, captchaService)
+    public StepExecutor(DetectEvaluator detectEvaluator, EngineOptions options, ILogger logger, AiActionExecutor aiActionExecutor, ITaskProgressReporter? reporter = null, CaptchaService? captchaService = null, HttpClient? httpClient = null)
+        : this(detectEvaluator, options, logger, captchaService, httpClient)
     {
         _aiActionExecutor = aiActionExecutor;
         _reporter = reporter;  // #4：ai action 失败推前端
@@ -100,6 +103,7 @@ public class StepExecutor
                 "ai" => await ExecuteAiAsync(step, ctx, script, phaseIframe),
                 "captcha" => await ExecuteCaptchaAsync(step, frame, selector, ctx),
                 "goto" => new StepResult(null) { ControlFlow = new(step with { Then = "goto" }) },
+                "httpRequest" => await ExecuteHttpAsync(step, ctx, timeout),
                 _ => throw new NotSupportedException($"未知的 action: {step.Action}")
             };
 
@@ -458,18 +462,457 @@ public class StepExecutor
         if (step.StoreAs == null)
             return null;
 
-        // 4. 根据 storeContent 决定存什么到变量
-        return step.StoreContent switch
+        // 4. 根据 storeContent 决定存什么到变量（归一化为 List<string> 遍历）
+        var contents = VariableHelper.NormalizeStoreContent(step.StoreContent);
+        var result = new Dictionary<string, object>();
+        foreach (var c in contents)
         {
-            "dataUrl" => new StepResult($"data:image/png;base64,{Convert.ToBase64String(bytes)}"),
-            "both" => new StepResult(new Dictionary<string, object>
+            if (c == "dataUrl")
+                result["dataUrl"] = $"data:image/png;base64,{Convert.ToBase64String(bytes)}";
+            else if (c == "base64")
+                result["base64"] = Convert.ToBase64String(bytes);
+            else if (c == "path")
+                result["path"] = filePath ?? throw new InvalidOperationException(
+                    "storeContent 含 path 但未保存文件（saveToFile=false 时不能含 path）");
+            else
+                throw new ArgumentException($"非法 storeContent 值: {c}");
+        }
+        return new StepResult(result.Count == 1 ? result.First().Value : result);
+    }
+
+    private async Task<StepResult?> ExecuteHttpAsync(StepNode step, ExecutionContext ctx, int timeout)
+    {
+        var method = (step.Method ?? "GET").ToUpperInvariant();
+        var validMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS" };
+        if (!validMethods.Contains(method))
+            throw new ArgumentException($"非法 HTTP method: {method}（合法: GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS）");
+
+        var url = VariableHelper.ReplaceVars(step.Url ?? "", ctx.ScopeChain, ctx.Vars);
+        if (string.IsNullOrWhiteSpace(url))
+            throw new ArgumentException("httpRequest url 不能为空");
+
+        // headers 归一化 + ReplaceVars
+        var headers = new Dictionary<string, string>();
+        if (step.Headers != null)
+        {
+            var hdrObj = step.Headers is JsonElement je2 ? VariableHelper.NormalizeJsonElement(je2) : step.Headers;
+            if (hdrObj is Dictionary<string, object> hdrDict)
             {
-                ["dataUrl"] = $"data:image/png;base64,{Convert.ToBase64String(bytes)}",
-                ["path"] = filePath ?? throw new InvalidOperationException(
-                    "storeContent=both 但未保存文件（saveToFile=false 时不能用 both）")
-            }),
-            _ => new StepResult(filePath ?? throw new InvalidOperationException(
-                "storeContent=path 但未保存文件（saveToFile=false 时不能为 path）"))
+                foreach (var kv in hdrDict)
+                    headers[kv.Key] = VariableHelper.ReplaceVars(kv.Value?.ToString() ?? "", ctx.ScopeChain, ctx.Vars);
+            }
+        }
+
+        // params：HttpClient 模式手动拼到 URL（见 ExecuteHttpViaHttpClientAsync）；APIRequestContext 模式用 options.Params（见 ExecuteHttpViaApiRequestAsync）。
+        // 🔴 不在分支前统一拼到 URL——否则 APIRequestContext 模式会 URL 查询串 + options.Params 重复。
+
+        // body + files 隐式判断编码方式
+        var files = step.Files;
+        var hasFiles = files != null && files.Count > 0;
+
+        if (step.ShareBrowserSession == true)
+        {
+            // Playwright APIRequestContext 共享模式（共享浏览器 cookie/storage）
+            return await ExecuteHttpViaApiRequestAsync(step, ctx, method, url, headers, hasFiles, timeout);
+        }
+        else
+        {
+            // HttpClient 独立模式
+            return await ExecuteHttpViaHttpClientAsync(step, ctx, method, url, headers, hasFiles, timeout);
+        }
+    }
+
+    private async Task<StepResult?> ExecuteHttpViaHttpClientAsync(
+        StepNode step, ExecutionContext ctx, string method, string url,
+        Dictionary<string, string> headers, bool hasFiles, int timeout)
+    {
+        // params 归一化 + 拼到 URL query string（HttpClient 不自动处理 params，需手动拼）
+        if (step.Params != null)
+        {
+            var paramObj = step.Params is JsonElement pj ? VariableHelper.NormalizeJsonElement(pj) : step.Params;
+            if (paramObj is Dictionary<string, object> paramDict)
+            {
+                var sb = new System.Text.StringBuilder();
+                foreach (var kv in paramDict)
+                {
+                    var v = VariableHelper.ReplaceVars(kv.Value?.ToString() ?? "", ctx.ScopeChain, ctx.Vars);
+                    if (sb.Length == 0) sb.Append(url.Contains('?') ? '&' : '?');
+                    else sb.Append('&');
+                    sb.Append(System.Uri.EscapeDataString(kv.Key));
+                    sb.Append('=');
+                    sb.Append(System.Uri.EscapeDataString(v));
+                }
+                url += sb.ToString();
+            }
+        }
+
+        using var req = new HttpRequestMessage(new HttpMethod(method), url);
+
+        // headers — 拆分 request header（加到 req.Headers）与 content header（延迟到 body 创建后加到 req.Content.Headers）。
+        // .NET 的 HttpRequestHeaders.TryAddWithoutValidation 对 content header（Content-Type/Content-Encoding 等）返 false。
+        var deferredContentHeaders = new List<KeyValuePair<string, string>>();
+        foreach (var kv in headers)
+        {
+            if (!req.Headers.TryAddWithoutValidation(kv.Key, kv.Value))
+                deferredContentHeaders.Add(kv);
+        }
+
+        // body + files
+        if (hasFiles)
+        {
+            // form-data 编码：body 的字段当普通表单字段，files 的项当文件字段
+            var multipart = new System.Net.Http.MultipartFormDataContent();
+            if (step.Body != null)
+            {
+                var bodyObj = step.Body is JsonElement bj ? VariableHelper.NormalizeJsonElement(bj) : step.Body;
+                if (bodyObj is Dictionary<string, object> bodyDict)
+                {
+                    foreach (var kv in bodyDict)
+                        multipart.Add(new System.Net.Http.StringContent(kv.Value?.ToString() ?? ""), kv.Key);
+                }
+                else if (bodyObj is string bodyStr)
+                {
+                    // string body in form-data context: single field named "body"
+                    multipart.Add(new System.Net.Http.StringContent(bodyStr), "body");
+                }
+            }
+
+            var rootPath = string.IsNullOrEmpty(_options.UploadRootPath)
+                ? AppContext.BaseDirectory : _options.UploadRootPath;
+            foreach (var f in step.Files!)
+            {
+                var fileDict = f is JsonElement fj ? VariableHelper.NormalizeJsonElement(fj) as Dictionary<string, object> : f as Dictionary<string, object>;
+                if (fileDict == null) continue;
+                var paramName = fileDict.TryGetValue("paramName", out var pn) ? pn?.ToString() ?? "file" : "file";
+                var path = fileDict.TryGetValue("path", out var pp) ? pp?.ToString() : null;
+                if (string.IsNullOrEmpty(path)) continue;
+                // 路径解析对齐 upload action（L278-288）：先 ResolveRawValue（纯变量引用时取原始对象如附件数组），
+                // 再 ReplaceVars 兜底（混合文本如 prefix_{{var}}_suffix）。ResolveUploadValue 不做 ReplaceVars。
+                var resolved = VariableHelper.ResolveRawValue(path!, ctx.ScopeChain, ctx.Vars, _logger);
+                string[] filePaths;
+                if (resolved != null)
+                    filePaths = VariableHelper.ResolveUploadValue(resolved, rootPath);
+                else
+                {
+                    var resolvedPath = VariableHelper.ReplaceVars(path!, ctx.ScopeChain, ctx.Vars);
+                    filePaths = VariableHelper.ResolveUploadValue(resolvedPath, rootPath);
+                }
+                if (filePaths.Length == 0) continue;
+                var filePath = filePaths[0];
+                var filename = fileDict.TryGetValue("filename", out var fn) && fn != null ? fn.ToString()! : System.IO.Path.GetFileName(filePath);
+                var contentType = fileDict.TryGetValue("contentType", out var ct) && ct != null ? ct.ToString() : GuessContentType(filePath);
+                var fileContent = new System.Net.Http.StreamContent(System.IO.File.OpenRead(filePath));
+                if (contentType != null)
+                    fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+                multipart.Add(fileContent, paramName!, filename!);
+            }
+            req.Content = multipart;
+        }
+        else if (step.Body != null)
+        {
+            // JSON 逻辑：body object → ReplaceJsonElementVars → Serialize → StringContent；body string → 原样
+            if (step.Body is JsonElement bodyJe && bodyJe.ValueKind == JsonValueKind.Object)
+            {
+                var bodyDict = VariableHelper.ReplaceJsonElementVars(bodyJe, ctx.ScopeChain, ctx.Vars);
+                var jsonBody = JsonSerializer.Serialize(bodyDict);
+                req.Content = new System.Net.Http.StringContent(jsonBody, System.Text.Encoding.UTF8, "application/json");
+            }
+            else if (step.Body is JsonElement bodyJeStr && bodyJeStr.ValueKind == JsonValueKind.String)
+            {
+                var bodyStr = VariableHelper.ReplaceVars(bodyJeStr.GetString() ?? "", ctx.ScopeChain, ctx.Vars);
+                req.Content = new System.Net.Http.StringContent(bodyStr, System.Text.Encoding.UTF8);
+            }
+            else if (step.Body is string s)
+            {
+                var bodyStr = VariableHelper.ReplaceVars(s, ctx.ScopeChain, ctx.Vars);
+                req.Content = new System.Net.Http.StringContent(bodyStr, System.Text.Encoding.UTF8);
+            }
+            else if (step.Body is Dictionary<string, object> dict)
+            {
+                // CLR Dictionary（测试/强类型构造）：手动遍历 ReplaceVars
+                var tempDict = new Dictionary<string, object>();
+                foreach (var kv in dict)
+                    tempDict[kv.Key] = (object)VariableHelper.ReplaceVars(kv.Value?.ToString() ?? "", ctx.ScopeChain, ctx.Vars);
+                var jsonBody = JsonSerializer.Serialize(tempDict);
+                req.Content = new System.Net.Http.StringContent(jsonBody, System.Text.Encoding.UTF8, "application/json");
+            }
+        }
+
+        // 应用延迟的 content header（Content-Type/Content-Encoding 等）到 req.Content.Headers。
+        // form-data 排除（其 Content-Type 含 boundary 不可覆盖）；无 body 时 req.Content 为 null 跳过。
+        if (!hasFiles && req.Content != null)
+        {
+            foreach (var kv in deferredContentHeaders)
+            {
+                if (kv.Key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 用户漏传 charset 时从自动推断值补全（StringContent 永远用 UTF-8 编码，
+                    // charset=utf-8 总是正确——body bytes 确实是 UTF-8）。
+                    var existingCharset = req.Content.Headers.ContentType?.CharSet;
+                    var userHasCharset = kv.Value.Contains("charset=", StringComparison.OrdinalIgnoreCase);
+                    var finalValue = (!userHasCharset && !string.IsNullOrEmpty(existingCharset))
+                        ? $"{kv.Value}; charset={existingCharset}"
+                        : kv.Value;
+                    req.Content.Headers.Remove("Content-Type");
+                    req.Content.Headers.TryAddWithoutValidation("Content-Type", finalValue);
+                }
+                else
+                {
+                    req.Content.Headers.Remove(kv.Key);
+                    req.Content.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+                }
+            }
+        }
+
+        // 发送（linked CTS + CancelAfter timeout）
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Ct);
+        cts.CancelAfter(timeout);
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.SendAsync(req, cts.Token);
+        }
+        catch (OperationCanceledException) when (!ctx.Ct.IsCancellationRequested)
+        {
+            // 步骤超时（非任务取消）：包装为 InvalidOperationException 进入 step 级 retry/fallback/onError 流程。
+            // 原始 OCE 会绕过 ScriptEngine L347 `when (ex is not OCE)` 直达脚本级超时处理。
+            throw new InvalidOperationException($"httpRequest 超时（{timeout}ms）");
+        }
+
+        // 组装响应
+        var respObj = new Dictionary<string, object>
+        {
+            ["statusCode"] = (int)response.StatusCode,
+            ["statusText"] = response.ReasonPhrase ?? "",
+            ["headers"] = ExtractHeadersHttpClient(response),
+            ["body"] = await ParseBodyAsync(response)
+        };
+
+        // failOnHttpError
+        var failOnHttpError = step.FailOnHttpError ?? true;
+        if (failOnHttpError && !response.IsSuccessStatusCode)
+        {
+            var bodyStr = respObj["body"] is string bs ? TruncateStr(bs, 200)
+                : TruncateStr(JsonSerializer.Serialize(respObj["body"]), 200);
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {bodyStr}");
+        }
+
+        VariableHelper.StoreVars(ctx.Vars, step.StoreAs, respObj);
+        return new StepResult(respObj);
+    }
+
+    private async Task<StepResult?> ExecuteHttpViaApiRequestAsync(
+        StepNode step, ExecutionContext ctx, string method, string url,
+        Dictionary<string, string> headers, bool hasFiles, int timeout)
+    {
+        var apiCtx = ctx.ActivePage.Context.APIRequest;
+
+        var options = new APIRequestContextOptions
+        {
+            Method = method,
+            Timeout = (float)timeout
+        };
+
+        // headers
+        if (headers.Count > 0)
+            options.Headers = headers.Select(kv => new KeyValuePair<string, string>(kv.Key, kv.Value)).ToArray();
+
+        // params — Playwright 内部自动拼到 URL
+        if (step.Params != null)
+        {
+            var paramObj = step.Params is JsonElement pj ? VariableHelper.NormalizeJsonElement(pj) : step.Params;
+            if (paramObj is Dictionary<string, object> paramDict)
+            {
+                options.Params = paramDict.Select(kv => new KeyValuePair<string, object>(kv.Key, (object)VariableHelper.ReplaceVars(kv.Value?.ToString() ?? "", ctx.ScopeChain, ctx.Vars))).ToArray();
+            }
+        }
+
+        // body + files
+        if (hasFiles)
+        {
+            var formData = apiCtx.CreateFormData();
+            if (step.Body != null)
+            {
+                var bodyObj = step.Body is JsonElement bj ? VariableHelper.NormalizeJsonElement(bj) : step.Body;
+                if (bodyObj is Dictionary<string, object> bodyDict)
+                {
+                    foreach (var kv in bodyDict)
+                        formData.Append(kv.Key, kv.Value?.ToString() ?? "");
+                }
+                else if (bodyObj is string bodyStr)
+                {
+                    // string body in form-data context: single field named "body"（对齐 HttpClient 模式 L568-572）
+                    formData.Append("body", bodyStr);
+                }
+            }
+
+            var rootPath = string.IsNullOrEmpty(_options.UploadRootPath)
+                ? AppContext.BaseDirectory : _options.UploadRootPath;
+            foreach (var f in step.Files!)
+            {
+                var fileDict = f is JsonElement fj ? VariableHelper.NormalizeJsonElement(fj) as Dictionary<string, object> : f as Dictionary<string, object>;
+                if (fileDict == null) continue;
+                var paramName = fileDict.TryGetValue("paramName", out var pn) ? pn?.ToString() ?? "file" : "file";
+                var path = fileDict.TryGetValue("path", out var pp) ? pp?.ToString() : null;
+                if (string.IsNullOrEmpty(path)) continue;
+                // 路径解析对齐 upload action：先 ResolveRawValue，再 ReplaceVars 兜底（与 HttpClient 模式同款）
+                var resolved = VariableHelper.ResolveRawValue(path!, ctx.ScopeChain, ctx.Vars, _logger);
+                string[] filePaths;
+                if (resolved != null)
+                    filePaths = VariableHelper.ResolveUploadValue(resolved, rootPath);
+                else
+                {
+                    var resolvedPath = VariableHelper.ReplaceVars(path!, ctx.ScopeChain, ctx.Vars);
+                    filePaths = VariableHelper.ResolveUploadValue(resolvedPath, rootPath);
+                }
+                if (filePaths.Length == 0) continue;
+                var filePath = filePaths[0];
+                var filename = fileDict.TryGetValue("filename", out var fn) && fn != null ? fn.ToString()! : System.IO.Path.GetFileName(filePath);
+                var contentType = fileDict.TryGetValue("contentType", out var ct) && ct != null ? ct.ToString() : GuessContentType(filePath);
+                var filePayload = new FilePayload
+                {
+                    Name = filename,
+                    MimeType = contentType ?? "application/octet-stream",
+                    Buffer = await File.ReadAllBytesAsync(filePath)
+                };
+                formData.Append(paramName!, filePayload);
+            }
+            options.Multipart = formData;
+        }
+        else if (step.Body != null)
+        {
+            if (step.Body is JsonElement bodyJe && bodyJe.ValueKind == JsonValueKind.Object)
+            {
+                // APIRequestContext 模式：CLR Dictionary 直接传 DataObject（Playwright 自动序列化，不需手动 Serialize）
+                var bodyDict = VariableHelper.ReplaceJsonElementVars(bodyJe, ctx.ScopeChain, ctx.Vars);
+                options.DataObject = bodyDict;
+            }
+            else if (step.Body is JsonElement bodyJeStr && bodyJeStr.ValueKind == JsonValueKind.String)
+            {
+                var bodyStr = VariableHelper.ReplaceVars(bodyJeStr.GetString() ?? "", ctx.ScopeChain, ctx.Vars);
+                options.DataObject = bodyStr;
+            }
+            else if (step.Body is string s)
+            {
+                options.DataObject = VariableHelper.ReplaceVars(s, ctx.ScopeChain, ctx.Vars);
+            }
+            else if (step.Body is Dictionary<string, object> dict)
+            {
+                var tempDict = new Dictionary<string, object>();
+                foreach (var kv in dict)
+                    tempDict[kv.Key] = (object)VariableHelper.ReplaceVars(kv.Value?.ToString() ?? "", ctx.ScopeChain, ctx.Vars);
+                options.DataObject = tempDict;
+            }
+        }
+
+        // 发送（用 FetchAsync 泛型方法——PostAsync/GetAsync 等专用方法强制 method，传 Method 选项无效）
+        var response = await apiCtx.FetchAsync(url, options);
+
+        // 组装响应
+        var respObj = new Dictionary<string, object>
+        {
+            ["statusCode"] = response.Status,
+            ["statusText"] = response.StatusText ?? "",
+            ["headers"] = ExtractHeadersApiRequest(response),
+            ["body"] = await ParseBodyApiRequestAsync(response)
+        };
+
+        // failOnHttpError（不用 FailOnStatusCode——Playwright 抛 PlaywrightException 与 HttpClient 模式异常类型不一致）
+        var failOnHttpError = step.FailOnHttpError ?? true;
+        if (failOnHttpError && !response.Ok)
+        {
+            var bodyStr = respObj["body"] is string bs ? TruncateStr(bs, 200)
+                : TruncateStr(JsonSerializer.Serialize(respObj["body"]), 200);
+            throw new InvalidOperationException($"HTTP {response.Status}: {bodyStr}");
+        }
+
+        VariableHelper.StoreVars(ctx.Vars, step.StoreAs, respObj);
+        return new StepResult(respObj);
+    }
+
+    private static Dictionary<string, object> ExtractHeadersHttpClient(System.Net.Http.HttpResponseMessage response)
+    {
+        var dict = new Dictionary<string, object>();
+        // 遍历所有响应头（含 content headers）
+        foreach (var header in response.Headers)
+        {
+            var values = header.Value.ToList();
+            dict[header.Key] = values.Count == 1 ? values[0] : values;
+        }
+        foreach (var header in response.Content.Headers)
+        {
+            if (dict.ContainsKey(header.Key)) continue;
+            var values = header.Value.ToList();
+            dict[header.Key] = values.Count == 1 ? values[0] : values;
+        }
+        return dict;
+    }
+
+    private static Dictionary<string, object> ExtractHeadersApiRequest(IAPIResponse response)
+    {
+        var dict = new Dictionary<string, object>();
+        var grouped = response.HeadersArray.GroupBy(h => h.Name, StringComparer.OrdinalIgnoreCase);
+        foreach (var g in grouped)
+        {
+            var values = g.Select(h => h.Value).ToList();
+            dict[g.Key] = values.Count == 1 ? values[0] : values;
+        }
+        return dict;
+    }
+
+    private static async Task<object> ParseBodyAsync(System.Net.Http.HttpResponseMessage response)
+    {
+        var contentType = response.Content.Headers.ContentType?.MediaType;
+        var text = await response.Content.ReadAsStringAsync();
+        return ParseBodyText(text, contentType);
+    }
+
+    private static async Task<object> ParseBodyApiRequestAsync(IAPIResponse response)
+    {
+        var text = await response.TextAsync();
+        var contentType = response.HeadersArray
+            .Where(h => h.Name.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
+            .Select(h => h.Value).FirstOrDefault();
+        return ParseBodyText(text, contentType);
+    }
+
+    private static object ParseBodyText(string text, string? contentType)
+    {
+        if (contentType != null && contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(text);
+                return VariableHelper.NormalizeJsonElement(doc.RootElement);
+            }
+            catch (JsonException)
+            {
+                return text;  // body 解析失败回退为 raw string（不阻断）
+            }
+        }
+        return text;
+    }
+
+    private static string TruncateStr(string s, int max) => s.Length <= max ? s : s[..max] + "...";
+
+    private static string? GuessContentType(string filePath)
+    {
+        var ext = System.IO.Path.GetExtension(filePath).ToLowerInvariant();
+        return ext switch
+        {
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".gif" => "image/gif",
+            ".pdf" => "application/pdf",
+            ".txt" => "text/plain",
+            ".csv" => "text/csv",
+            ".json" => "application/json",
+            ".zip" => "application/zip",
+            ".doc" => "application/msword",
+            ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xls" => "application/vnd.ms-excel",
+            ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            _ => "application/octet-stream"
         };
     }
 

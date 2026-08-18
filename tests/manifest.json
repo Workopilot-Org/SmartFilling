@@ -132,7 +132,7 @@
       "fillData": {
         "F_X": "有值"
       },
-      "covers": "goBack/reload/wait(until)/screenshot(element,viewport,storeContent dataUrl+both)/check(page_contains,selector_exists,selector_enabled,selector_gone,data_exists)"
+      "covers": "goBack/reload/wait(until)/screenshot(element,viewport,storeContent dataUrl/path/数组组合)/check(page_contains,selector_exists,selector_enabled,selector_gone,data_exists)"
     },
     {
       "file": "18-multi-tab.json",

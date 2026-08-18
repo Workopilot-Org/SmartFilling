@@ -95,7 +95,11 @@ public class ScriptBuilder
         bool? accept = null, string? dialogPromptText = null, string? matchBy = null,
         string? toPhase = null, string? toStep = null, string? then = null,
         DetectCondition? detect = null, string? message = null,
-        int? maxRetries = null, List<StepNode>? cleanupSteps = null)
+        int? maxRetries = null, List<StepNode>? cleanupSteps = null,
+        object? storeContent = null,
+        string? method = null, object? headers = null, object? body = null,
+        object? @params = null, bool? failOnHttpError = null, bool? shareBrowserSession = null,
+        List<object>? files = null)
     {
         return new StepNode
         {
@@ -145,7 +149,10 @@ public class ScriptBuilder
             Then = then,
             Detect = detect,
             Message = message,
-            CleanupSteps = cleanupSteps  // T.14：删 MaxRetries（改 RerunOptions）
+            CleanupSteps = cleanupSteps,  // T.14：删 MaxRetries（改 RerunOptions）
+            StoreContent = storeContent,
+            Method = method, Headers = headers, Body = body, Params = @params,
+            FailOnHttpError = failOnHttpError, ShareBrowserSession = shareBrowserSession, Files = files
         };
     }
 

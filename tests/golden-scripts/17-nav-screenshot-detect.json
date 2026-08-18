@@ -4,7 +4,7 @@
   "version": 2,
   "scriptId": "gt-17-nav-screenshot-detect",
   "name": "GT17 导航回退/刷新 + 截图变体 + 剩余 detect",
-  "description": "goBack/reload/wait(until)/screenshot(element,viewport,storeContent dataUrl+both) + check(page_contains,selector_exists,selector_enabled,selector_gone,data_exists)",
+  "description": "goBack/reload/wait(until)/screenshot(element,viewport,storeContent dataUrl/path/数组组合) + check(page_contains,selector_exists,selector_enabled,selector_gone,data_exists)",
   "fields": [
     { "name": "F_X", "label": "测试值", "type": "string", "uiComponent": "input" }
   ],
@@ -36,7 +36,7 @@
     {
       "kind": "phase", "name": "shots", "type": "sequential", "aiGoal": "测试截图类型与存储内容变体",
       "steps": [
-        { "kind": "step", "name": "shot-element-both", "action": "screenshot", "screenshotType": "element", "selector": "#login-btn", "storeAs": "shotBtn", "storeContent": "both" },
+        { "kind": "step", "name": "shot-element-both", "action": "screenshot", "screenshotType": "element", "selector": "#login-btn", "storeAs": "shotBtn", "storeContent": ["path","dataUrl"] },
         { "kind": "step", "name": "check-shot-both", "action": "check", "detect": { "type": "js", "check": "vars.shotBtn && vars.shotBtn.path && vars.shotBtn.dataUrl" }, "then": "nothing" },
         { "kind": "step", "name": "shot-dataurl", "action": "screenshot", "screenshotType": "element", "selector": "#login-btn", "storeAs": "shotData", "storeContent": "dataUrl" },
         { "kind": "step", "name": "check-shot-dataurl", "action": "check", "detect": { "type": "js", "check": "vars.shotData && vars.shotData.indexOf('data:image') === 0" }, "then": "nothing" },

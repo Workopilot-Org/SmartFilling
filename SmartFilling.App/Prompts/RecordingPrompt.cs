@@ -103,6 +103,7 @@ internal static class RecordingPrompt
         | ai | description |
         | handleDialog | accept |
         | screenshot | screenshotType?（可选 storeAs/saveToFile/storeContent/folder/filename） |
+        | httpRequest | httpUrl + storeAs + httpMethod?（可选 headers/httpBody/params/failOnHttpError/shareBrowserSession/files） |
 
         ## check 详解
 
@@ -429,7 +430,7 @@ internal static class RecordingPrompt
         - goto：`toPhase` 或 `toStep`
         - ai：`description`，可选 `storeAs`（必须 object 格式 `{ "变量名": "描述" }`，下游用 `{{name.key}}` 引用属性）
         - handleDialog：`accept`(boolean) + `dialogPromptText`，可选 `storeAs`（存 dialog 消息文本）
-        - screenshot：`screenshotType`(viewport/fullPage/element) + `selector`(element时必填) + `storeAs`(可选，下游引用时传) + `saveToFile`(可选，默认true) + `storeContent`(可选，path/dataUrl/both，根据下游消费场景推断) + `folder`/`filename`(可选，任务描述明确指定保存目录/文件名时传，不传则自动生成)。如果任务描述不明确，询问用户截图用途和是否需要存变量
+        - screenshot：`screenshotType`(viewport/fullPage/element) + `selector`(element时必填) + `storeAs`(可选，下游引用时传) + `saveToFile`(可选，默认true) + `storeContent`(可选，单值 path/dataUrl/base64 或数组组合如 [dataUrl,path]，根据下游消费场景推断) + `folder`/`filename`(可选，任务描述明确指定保存目录/文件名时传，不传则自动生成)。如果任务描述不明确，询问用户截图用途和是否需要存变量
 
         ## 3. `get_snapshot` — 查看页面结构
 
@@ -613,8 +614,29 @@ internal static class RecordingPrompt
 
         - **存数据首选 `extract`**（property/storeAs 明确提取内容，语义清晰；任务描述没明确存什么时用 extract）
         - `click` storeAs 存**元素 innerText**（如按钮文字「提交」，**非点击结果**）、`fill`/`type` 存**页面回读实际值**（非传入值）、`select` 存**选中值**：**任务描述明确要求存这些值才传** storeAs（如「记下按钮文字」「保存实际填入值」），否则用 extract
-        - **其余支持 storeAs 的 action**（存各自返回值，任务描述明确要存时用）：`navigate`(最终 URL) / `evaluate`(JS 结果) / `ai`(done result，必须 object) / `handleDialog`(dialog 消息) / `switchTab`(切换后 URL) / `screenshot`(按 storeContent 存路径/dataUrl)
+        - **其余支持 storeAs 的 action**（存各自返回值，任务描述明确要存时用）：`navigate`(最终 URL) / `evaluate`(JS 结果) / `ai`(done result，必须 object) / `handleDialog`(dialog 消息) / `switchTab`(切换后 URL) / `screenshot`(按 storeContent 存路径/dataUrl/base64) / `httpRequest`(存响应对象 {statusCode, statusText, headers, body})
         - **不支持 storeAs**（配了也无效）：check / wait / captcha / goto / hover / pressKey / scroll / upload / goBack / reload / closeTab
+
+        ## httpRequest 详解
+
+        何时用：任务描述要求"调用接口/请求 API/获取 token/回调通知/上传截图到接口"等。**录制期只落盘不执行**（http 有副作用）。
+
+        - `httpMethod`：GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS，默认 GET
+        - `httpUrl`：请求 URL，支持 `{{vars}}`
+        - `headers`：请求头 kv，value 支持 `{{vars}}`
+        - `httpBody`：请求体。files 为空时：object→JSON+自动 Content-Type: application/json，string→原样；files 非空时（form-data）：object 的 kv 当普通表单字段
+        - `params`：query string 参数 kv，value 支持 `{{vars}}`，代码自动拼到 URL
+        - `failOnHttpError`：非 2xx 是否抛错，默认 true。false 时存响应不抛，后续用 check js 判断 statusCode
+        - `shareBrowserSession`：true→共享浏览器 cookie/storage（自动带登录态，调同站 API 免传 Authorization）；false/省略→独立请求（不泄露浏览器登录态，调第三方 API 用）
+        - `storeAs`：存响应对象 `{statusCode, statusText, headers, body}`，body 自动 JSON 解析
+        - `files`：文件列表，非空→自动 form-data。每项 `{paramName:接口入参名, path:文件路径支持{{vars}}, filename?:上传文件名, contentType?:MIME}`。如 `files:[{paramName:"file",path:"{{filePath}}"}]` + `httpBody:{category:"合同"}`
+        - **后续步骤引用响应值**：storeAs 存的响应对象用 `{{resp.body.token}}` 嵌套取值（.链式语法，见下方 valueFrom 说明）；单值头用 `{{resp.headers.Content-Type}}`；多值头用 evaluate + args 提取
+
+        ## 引用 storeAs 嵌套字段（.链式语法 + valueFrom）
+
+        当 fill/type/select 的 value 引用前步 httpRequest/extract/evaluate 存的 storeAs 变量嵌套字段时（如 `{{resp.body.token}}`），传 `value`（录制期实际值，用于执行 DOM）+ `valueFrom`（落盘占位符，如 `"{{resp.body.token}}"`）。代码录制期用 value 执行、落盘用 valueFrom。
+
+        每轮「当前录制状态」的 `storeAsVariables` 数组列出已声明的 storeAs 变量名（**仅根变量名，如 resp，不含嵌套路径结构**），valueFrom 从中取根变量名拼路径——嵌套路径（如 body.token）需自行推断 http 响应结构（body 是对象时 `{{resp.body.x}}`）。引用 fillData 字段（简单字段名）不传 valueFrom（用 fieldName 自动参数化为 `{{fieldName}}`）。
 
         ## cleanupSteps
 

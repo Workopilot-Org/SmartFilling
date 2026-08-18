@@ -53,7 +53,7 @@ public record StepNode : PhaseItem
     public string? Filename { get; init; }          // screenshot 文件名（不含扩展名），空则自动生成
     public string? ScreenshotType { get; init; }    // null 表示 "viewport"，见 switch default 分支
     public bool? SaveToFile { get; init; }          // null 表示 true（保存文件），见 != false 检查
-    public string? StoreContent { get; init; }      // null 表示 "path"，见 switch _ 分支
+    public object? StoreContent { get; init; }      // null 表示 "path"。string 单值 或 List<string>/JsonElement(Array) 多值（["path","dataUrl","base64"]）
     public List<object>? Args { get; init; }
     public int? PollInterval { get; init; }
     public string? MatchBy { get; init; }
@@ -86,4 +86,13 @@ public record StepNode : PhaseItem
     public string? OnError { get; init; }
     public int? Timeout { get; init; }
     public int? MaxAiTurns { get; init; }
+
+    // httpRequest
+    public string? Method { get; init; }           // GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS，默认 GET
+    public object? Headers { get; init; }          // 请求头 object（kv），value 支持 {{vars}}
+    public object? Body { get; init; }             // 请求体 string 或 object（object→JSON；form-data 时存普通表单字段）
+    public object? Params { get; init; }           // query string 参数 object（kv）
+    public bool? FailOnHttpError { get; init; }    // 非 2xx 是否抛错，默认 true
+    public List<object>? Files { get; init; }      // 文件列表 [{paramName,path,filename?,contentType?}]，非空→multipart/form-data
+    public bool? ShareBrowserSession { get; init; } // true→Playwright APIRequestContext（共享浏览器 cookie/storage）；false/省略→HttpClient 独立
 }

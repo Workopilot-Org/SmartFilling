@@ -19,6 +19,7 @@ public class ScriptEngine
     private readonly DetectEvaluator _detectEvaluator;
     private readonly AiActionExecutor? _aiActionExecutor;
     private readonly ITaskProgressReporter? _progressReporter;
+    private readonly HttpClient? _httpClient;
 
     /// <summary>
     /// P1（第8轮决策落实）：主执行循环每步触发（覆盖 sequential phase / loop phase / ai phase 全路径），
@@ -27,33 +28,34 @@ public class ScriptEngine
     /// </summary>
     public event Action<string?>? StepActivity;
 
-    public ScriptEngine(ILogger logger, EngineOptions options, Services.CaptchaService? captchaService = null)
+    public ScriptEngine(ILogger logger, EngineOptions options, Services.CaptchaService? captchaService = null, HttpClient? httpClient = null)
     {
         _logger = logger;
         _options = options;
+        _httpClient = httpClient;
         _detectEvaluator = new DetectEvaluator(logger);
-        _stepExecutor = new StepExecutor(_detectEvaluator, options, logger, captchaService);
+        _stepExecutor = new StepExecutor(_detectEvaluator, options, logger, captchaService, httpClient);
     }
 
-    public ScriptEngine(ILogger logger, EngineOptions options, IAiProvider aiProvider, Services.CaptchaService? captchaService = null)
-        : this(logger, options, captchaService)
+    public ScriptEngine(ILogger logger, EngineOptions options, IAiProvider aiProvider, Services.CaptchaService? captchaService = null, HttpClient? httpClient = null)
+        : this(logger, options, captchaService, httpClient)
     {
         // #4：无 reporter 场景，AiActionExecutor/StepExecutor 的 reporter 传 null（_logger 仍启用，文件日志生效）
         _aiActionExecutor = new AiActionExecutor(aiProvider, logger, null, _options.Compression);
-        _stepExecutor = new StepExecutor(_detectEvaluator, options, logger, _aiActionExecutor, null, captchaService);
+        _stepExecutor = new StepExecutor(_detectEvaluator, options, logger, _aiActionExecutor, null, captchaService, httpClient);
     }
 
-    public ScriptEngine(ILogger logger, EngineOptions options, IAiProvider aiProvider, ITaskProgressReporter progressReporter, Services.CaptchaService? captchaService = null)
-        : this(logger, options, captchaService)  // #4 改：委托基构造（不委托上方 4 参带 AI 构造——否则 AiActionExecutor 在 reporter 注入前已创建，拿不到 reporter）
+    public ScriptEngine(ILogger logger, EngineOptions options, IAiProvider aiProvider, ITaskProgressReporter progressReporter, Services.CaptchaService? captchaService = null, HttpClient? httpClient = null)
+        : this(logger, options, captchaService, httpClient)  // #4 改：委托基构造（不委托上方 4 参带 AI 构造——否则 AiActionExecutor 在 reporter 注入前已创建，拿不到 reporter）
     {
         _progressReporter = progressReporter;
         // #4：带 reporter 场景，AiActionExecutor/StepExecutor 注入 reporter（可观测性：每轮工具日志推前端 / ai action 失败推前端）
         _aiActionExecutor = new AiActionExecutor(aiProvider, logger, progressReporter, _options.Compression);
-        _stepExecutor = new StepExecutor(_detectEvaluator, options, logger, _aiActionExecutor, progressReporter, captchaService);
+        _stepExecutor = new StepExecutor(_detectEvaluator, options, logger, _aiActionExecutor, progressReporter, captchaService, httpClient);
     }
 
-    public ScriptEngine(ILogger logger, EngineOptions options, ITaskProgressReporter progressReporter, Services.CaptchaService? captchaService = null)
-        : this(logger, options, captchaService)
+    public ScriptEngine(ILogger logger, EngineOptions options, ITaskProgressReporter progressReporter, Services.CaptchaService? captchaService = null, HttpClient? httpClient = null)
+        : this(logger, options, captchaService, httpClient)
     {
         _progressReporter = progressReporter;
     }
@@ -929,7 +931,9 @@ public class ScriptEngine
                                 // 重置累积容器（phase_rerun = 重跑整个 loop，旧累积数据应清空，否则数据翻倍）
                                 if (loopElement.StoreAs != null)
                                     ctx.Vars[loopElement.StoreAs] = new List<object>();
-                                // R12-5（用户选方式1）：重算 domCount（DOM 可能已变）。frame/resolvedSelector 不需重算（phase.Iframe 固定 + helper 已 RemoveAt+Pop 回退 + Vars 累积不影响 frame 解析）
+                                // R5-1（第5轮核查，用户选A）：重新解析 frame——phase_rerun 的 cleanup steps 可能导航/刷新致旧 iframe frame detach，frame 是方法入口一次性引用不重新解析则 CountAsync 抛异常。与现有 loop 每轮重新解析 tableFrame 对称。
+                                frame = FrameResolver.ResolveChain(ctx.ActivePage, IframeChainMerger.Resolve(null, phase.Iframe), ctx.ScopeChain, ctx.Vars);
+                                // R12-5（用户选方式1）：重算 domCount（DOM 可能已变）。resolvedSelector 不需重算（loopElement.Selector 固定 + ReplaceVars 依赖的 scopeChain/Vars 在 phase_rerun 后已回退）
                                 domCount = await frame.Locator(resolvedSelector).CountAsync();
                                 goto LOOP_TOP;
                             case LoopControlFlowOutcome.Return:
@@ -1820,6 +1824,10 @@ public class ScriptEngine
             case "navigate":
                 if (step.Url != null) parts.Add($"url={VariableHelper.ReplaceVars(step.Url, ctx.ScopeChain, ctx.Vars)}");
                 break;
+            case "httpRequest":
+                if (step.Method != null) parts.Add($"method={step.Method}");
+                if (step.Url != null) parts.Add($"url={VariableHelper.ReplaceVars(step.Url, ctx.ScopeChain, ctx.Vars)}");
+                break;
             case "extract":
                 if (step.StoreAs != null) parts.Add("storeAs=yes");
                 if (!string.IsNullOrEmpty(step.ExtractType) && step.ExtractType != "property") parts.Add($"extractType={step.ExtractType}");
@@ -1941,7 +1949,7 @@ public class ScriptEngine
         return result;
     }
 
-    static readonly Regex ReturnDataPlaceholderRegex = new(@"\{\{(\w+(?:\.\w+)*)\}\}", RegexOptions.Compiled);
+    static readonly Regex ReturnDataPlaceholderRegex = new(@"\{\{([\w-]+(?:\.[\w-]+)*)\}\}", RegexOptions.Compiled);
 
     static object ResolveReturnDataValue(object? value, ExecutionContext ctx, ILogger? logger = null)
     {
@@ -2009,28 +2017,28 @@ public class ScriptEngine
             {
                 if (step.Field != null) names.Add(step.Field);
                 if (step.Value != null)
-                    foreach (Match m in Regex.Matches(step.Value, @"\{\{(\w+(?:\.\w+)*)\}\}"))
+                    foreach (Match m in Regex.Matches(step.Value, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}"))
                     {
                         var fullKey = m.Groups[1].Value;
                         var dotIdx = fullKey.IndexOf('.');
                         names.Add(dotIdx > 0 ? fullKey[..dotIdx] : fullKey);
                     }
                 if (step.Description != null)
-                    foreach (Match m in Regex.Matches(step.Description, @"\{\{(\w+(?:\.\w+)*)\}\}"))
+                    foreach (Match m in Regex.Matches(step.Description, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}"))
                     {
                         var fullKey = m.Groups[1].Value;
                         var dotIdx = fullKey.IndexOf('.');
                         names.Add(dotIdx > 0 ? fullKey[..dotIdx] : fullKey);
                     }
                 if (step.Selector != null)
-                    foreach (Match m in Regex.Matches(step.Selector, @"\{\{(\w+(?:\.\w+)*)\}\}"))
+                    foreach (Match m in Regex.Matches(step.Selector, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}"))
                     {
                         var fullKey = m.Groups[1].Value;
                         var dotIdx = fullKey.IndexOf('.');
                         names.Add(dotIdx > 0 ? fullKey[..dotIdx] : fullKey);
                     }
                 if (step.FilePath != null)
-                    foreach (Match m in Regex.Matches(step.FilePath, @"\{\{(\w+(?:\.\w+)*)\}\}"))
+                    foreach (Match m in Regex.Matches(step.FilePath, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}"))
                     {
                         var fullKey = m.Groups[1].Value;
                         var dotIdx = fullKey.IndexOf('.');
@@ -2054,28 +2062,28 @@ public class ScriptEngine
             {
                 if (step.Field != null) names.Add(step.Field);
                 if (step.Value != null)
-                    foreach (Match m in Regex.Matches(step.Value, @"\{\{(\w+(?:\.\w+)*)\}\}"))
+                    foreach (Match m in Regex.Matches(step.Value, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}"))
                     {
                         var fullKey = m.Groups[1].Value;
                         var dotIdx = fullKey.IndexOf('.');
                         names.Add(dotIdx > 0 ? fullKey[..dotIdx] : fullKey);
                     }
                 if (step.Description != null)
-                    foreach (Match m in Regex.Matches(step.Description, @"\{\{(\w+(?:\.\w+)*)\}\}"))
+                    foreach (Match m in Regex.Matches(step.Description, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}"))
                     {
                         var fullKey = m.Groups[1].Value;
                         var dotIdx = fullKey.IndexOf('.');
                         names.Add(dotIdx > 0 ? fullKey[..dotIdx] : fullKey);
                     }
                 if (step.Selector != null)
-                    foreach (Match m in Regex.Matches(step.Selector, @"\{\{(\w+(?:\.\w+)*)\}\}"))
+                    foreach (Match m in Regex.Matches(step.Selector, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}"))
                     {
                         var fullKey = m.Groups[1].Value;
                         var dotIdx = fullKey.IndexOf('.');
                         names.Add(dotIdx > 0 ? fullKey[..dotIdx] : fullKey);
                     }
                 if (step.FilePath != null)
-                    foreach (Match m in Regex.Matches(step.FilePath, @"\{\{(\w+(?:\.\w+)*)\}\}"))
+                    foreach (Match m in Regex.Matches(step.FilePath, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}"))
                     {
                         var fullKey = m.Groups[1].Value;
                         var dotIdx = fullKey.IndexOf('.');

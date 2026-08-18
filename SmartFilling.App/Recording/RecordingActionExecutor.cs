@@ -139,8 +139,10 @@ public class RecordingActionExecutor
     /// 守卫（决策24）：value 已含 {{}}（bizValues 已处理）则跳过，不重复参数化。
     /// 纯函数，caller 传 _recordVarValues 引用填缓存（F4，原 value 只在函数内可得）。
     /// </summary>
-    internal static string? ParametrizeValue(string? action, string? value, string? fieldName, Dictionary<string,string>? recordVarValues = null)
+    internal static string? ParametrizeValue(string? action, string? value, string? fieldName, Dictionary<string,string>? recordVarValues = null, string? valueFrom = null)
     {
+        // valueFrom 优先：声明了落盘占位符 → 直接返回（跳过 fieldName 参数化）
+        if (!string.IsNullOrEmpty(valueFrom)) return valueFrom;
         if ((action == "fill" || action == "type" || action == "select") && fieldName != null && value != null
             && !value.Contains("{{"))  // 决策24 守卫：bizValues 已处理则跳过
         {
@@ -504,11 +506,14 @@ public class RecordingActionExecutor
         var value = step.Action == "navigate" ? step.Url : step.Value;
         var refValue = args.GetValueOrDefault("ref")?.ToString();
         var selector = step.Selector;
+        // valueFrom：声明=录制期用实际值执行 DOM、落盘用占位符，不需问用户要 value 的值（只豁免 value 守卫，selector 仍检查）
+        var valueFrom = args.GetValueOrDefault("valueFrom")?.ToString();
 
         // dreamy F1：通用守卫——operate 录制期真实执行的字段（selector/value/url）含未解析 {{业务变量}} → 问用户要变量实际值（A' 兜底：AI 优先从页面读实际值，读不到时问用户要值）
         // （系统凭据由 ResolveSystemVars 替换，不拦；save_step 的 detect/until/condition/evaluate/extract 录制期不执行 DOM 定位，含 {{}} 合法——回放期 ReplaceVars，不走本守卫）
         // 时序：守卫在阶段0 前（执行前）检查原始 selector/value/url；E 搜替换在阶段6（执行后）。AI 按 E 传实际值→守卫不拦→E 搜替换；AI 误写 {{}}→守卫拦截（查缓存/问用户）→不进阶段6 E。互补不冲突。
-        var unresolvedField = CheckUnresolvedRecordVar(action, selector, value, refValue);
+        // valueFrom 声明时 value 守卫豁免（传 null value 只查 selector）
+        var unresolvedField = CheckUnresolvedRecordVar(action, selector, !string.IsNullOrEmpty(valueFrom) ? null : value, refValue);
         if (unresolvedField != null)
         {
             // 进阶档（缓存复用）：先查 recordVarValues（用户给过的变量值），有值则用缓存值替换 {{}} 后继续执行——同变量只问一次，后续步骤引用复用不重复问
@@ -930,7 +935,8 @@ public class RecordingActionExecutor
         // dreamy A：文本锚点参数化（per-anchor 守卫 D-1，D-2 覆盖 . / 空 / text()，R4-1 预过滤器 contains()）
         extractedSelector = ParametrizeSelectorText(extractedSelector, fieldName, recordVarValues);
         // dreamy B：fill/type/select 整值参数化（守卫 skip if {{}}，含 type 修原 L536 漏 type；recordVarValues 内部填缓存 F4）
-        value = ParametrizeValue(action, value, fieldName, recordVarValues);
+        // valueFrom 最高优先级：声明落盘占位符直接返回（跳过 fieldName 参数化），与 bizValues 互斥（AI 不会同时传）
+        value = ParametrizeValue(action, value, fieldName, recordVarValues, valueFrom);
 
         // 决策 D3/F①：loop phase 内 + AI 传 rowIndexed=true → 多独立 input（明细每行各一框）selector 行索引参数化。
         // 对齐回放 ScriptEngine loop（组2 改存储：rowData["_rowIndex"]=rowIdx+offset，{{_rowIndex}} 经 ReplaceVars 从 scopeChain 命中 rowData 替换；不写 ctx.Vars）。

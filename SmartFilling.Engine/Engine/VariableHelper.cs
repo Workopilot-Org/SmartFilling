@@ -28,6 +28,25 @@ public static class VariableHelper
     }
 
     /// <summary>
+    /// 归一化 storeContent 为 List&lt;string&gt;（§5.5：string 单值→[string]，JsonElement(Array)→枚举，null→["path"]）。
+    /// 供 StepExecutor（ExecuteScreenshotAsync）和 ScriptLoader（校验）共享。
+    /// </summary>
+    internal static List<string> NormalizeStoreContent(object? storeContent)
+    {
+        if (storeContent == null) return ["path"];
+        return storeContent switch
+        {
+            string s => [s],
+            JsonElement je when je.ValueKind == JsonValueKind.Array
+                => je.EnumerateArray().Select(e => e.GetString() ?? "").ToList(),
+            JsonElement je when je.ValueKind == JsonValueKind.String
+                => [je.GetString() ?? "path"],
+            System.Collections.IList list => list.Cast<object>().Select(o => o?.ToString() ?? "").ToList(),
+            _ => [storeContent.ToString() ?? "path"]
+        };
+    }
+
+    /// <summary>
     /// 从作用域栈逐层查找并替换 {{varName}} 占位符。
     /// scopeChain: [内层 rowData, 外层 rowData, ..., fillData]
     /// </summary>
@@ -35,7 +54,7 @@ public static class VariableHelper
     {
         if (string.IsNullOrEmpty(template)) return template;
 
-        return Regex.Replace(template, @"\{\{(\w+(?:\.\w+)*)\}\}", m =>
+        return Regex.Replace(template, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}", m =>
         {
             var key = m.Groups[1].Value;
             var parts = key.Split('.');
@@ -82,7 +101,7 @@ public static class VariableHelper
         });
     }
 
-    private static readonly Regex PureVarRegex = new(@"^\{\{(\w+(?:\.\w+)*)\}\}$", RegexOptions.Compiled);
+    private static readonly Regex PureVarRegex = new(@"^\{\{([\w-]+(?:\.[\w-]+)*)\}\}$", RegexOptions.Compiled);
 
     /// <summary>
     /// 解析模板中的变量引用，返回原始对象值。
@@ -307,7 +326,7 @@ public static class VariableHelper
     public static string? InferFieldFromValue(string? value)
     {
         if (value == null) return null;
-        var m = Regex.Match(value, @"\{\{(\w+(?:\.\w+)*)\}\}");
+        var m = Regex.Match(value, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}");
         if (!m.Success) return null;
         var fullKey = m.Groups[1].Value;
         var dotIdx = fullKey.IndexOf('.');
@@ -409,7 +428,7 @@ public static class VariableHelper
         return result;
     }
 
-    private static object ReplaceJsonElementVars(System.Text.Json.JsonElement je, List<Dictionary<string, object>> scopeChain, Dictionary<string, object> vars)
+    internal static object ReplaceJsonElementVars(System.Text.Json.JsonElement je, List<Dictionary<string, object>> scopeChain, Dictionary<string, object> vars)
     {
         if (je.ValueKind == System.Text.Json.JsonValueKind.String)
             return ReplaceVars(je.GetString() ?? "", scopeChain, vars);

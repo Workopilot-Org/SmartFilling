@@ -414,7 +414,7 @@ public static class ScriptLoader
             foreach (var layer in chain)
             {
                 if (string.IsNullOrEmpty(layer)) continue;
-                foreach (Match m in Regex.Matches(layer, @"\{\{(\w+(?:\.\w+)*)\}\}"))
+                foreach (Match m in Regex.Matches(layer, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}"))
                 {
                     var ph = m.Groups[1].Value;
                     if (specialVars.Contains(ph) || definedFields.Contains(ph) || storeAsNames.Contains(ph) || initialVarNames.Contains(ph)) continue;
@@ -472,7 +472,7 @@ public static class ScriptLoader
         foreach (var src in sources)
         {
             if (src == null) continue;
-            foreach (Match m in Regex.Matches(src, @"\{\{(\w+(?:\.\w+)*)\}\}"))
+            foreach (Match m in Regex.Matches(src, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}"))
                 result.Add(m.Groups[1].Value);
         }
         // 形态 A：iframe selector 链每层支持 {{}}（人工写的 rowIndex/字段名/变量）
@@ -481,7 +481,7 @@ public static class ScriptLoader
             foreach (var layer in step.Iframe)
             {
                 if (string.IsNullOrEmpty(layer)) continue;
-                foreach (Match m in Regex.Matches(layer, @"\{\{(\w+(?:\.\w+)*)\}\}"))
+                foreach (Match m in Regex.Matches(layer, @"\{\{([\w-]+(?:\.[\w-]+)*)\}\}"))
                     result.Add(m.Groups[1].Value);
             }
         }
@@ -547,7 +547,7 @@ public static class ScriptLoader
     /// **不并入 ReservedVarNames**——那会禁止 fields 用这俩名，破坏 {{username}}/{{password}} 正常用法（fields name=username source=system 是合法的、是登录场景标准用法）。
     /// 改 public 供录制层（App RecordingEngine）实时反馈复用（两层规则一致：Y 修正→X 复查通过，不双报错）。</summary>
     public static readonly FrozenSet<string> SystemCredentialKeys = new[] { "username", "password" }.ToFrozenSet();
-    private static readonly Regex ValidVarNameRegex = new(@"^\w+$", RegexOptions.Compiled);
+    private static readonly Regex ValidVarNameRegex = new(@"^[\w-]+$", RegexOptions.Compiled);
     private static readonly HashSet<string> NoStoreAsActions = new()
         { "hover", "pressKey", "scroll", "upload", "goBack", "reload", "closeTab", "wait", "check", "captcha", "goto" };
 
@@ -582,11 +582,12 @@ public static class ScriptLoader
                             errors.Add($"ai action 的 storeAs 必须是 object 格式 {{ \"变量名\": \"描述\" }}，不能是字符串 (step: {step.Action})");
                     }
 
-                    // 4. screenshot storeContent 与 saveToFile 兼容性校验
+                    // 4. screenshot storeContent 与 saveToFile 兼容性校验（归一化为 List 后判断含 path）
                     if (step.Action == "screenshot")
                     {
-                        if (step.SaveToFile == false && step.StoreContent is null or "path" or "both")
-                            errors.Add($"screenshot saveToFile=false 时 storeContent 只能为 dataUrl (step: {step.Name ?? step.Action})");
+                        var contents = VariableHelper.NormalizeStoreContent(step.StoreContent);
+                        if (step.SaveToFile == false && contents.Contains("path"))
+                            errors.Add($"screenshot saveToFile=false 时 storeContent 不能含 path（只能为 dataUrl/base64）(step: {step.Name ?? step.Action})");
                     }
 
                     // 5. 原有变量名合法性校验

@@ -240,7 +240,7 @@
         "description": { "type": "string", "description": "操作意图描述" },
         "selector": { "type": "string", "description": "XPath 选择器（录制器自动生成；手工编辑时也可用 CSS）" },
         "value": { "type": ["string", "null"], "description": "填写/选择的值，支持 {{占位符}}" },
-        "url": { "type": "string", "description": "navigate 目标 URL" },
+        "url": { "type": "string", "description": "navigate/httpRequest 目标 URL，支持 {{vars}}" },
         "key": { "type": "string", "description": "pressKey 按键值（Tab/Enter/Escape 等）" },
         "filePath": { "type": "string", "description": "upload 文件路径" },
         "code": { "type": "string", "description": "evaluate JS 代码" },
@@ -312,13 +312,39 @@
             "description": "截图类型：viewport(可见区域)/fullPage(整页)/element(元素，需selector)" },
         "saveToFile": { "type": "boolean", "default": true,
             "description": "是否保存文件到磁盘。false 时不保存文件，只生成图片数据" },
-        "storeContent": { "type": "string", "enum": ["path", "dataUrl", "both"], "default": "path",
-            "description": "storeAs 存什么：path(文件绝对路径)/dataUrl(base64 data URL)/both(两者)。saveToFile=false 时只能为 dataUrl" },
+        "storeContent": {
+          "oneOf": [
+            { "type": "string", "enum": ["path", "dataUrl", "base64"] },
+            { "type": "array", "items": { "type": "string", "enum": ["path", "dataUrl", "base64"] }, "minItems": 1, "uniqueItems": true }
+          ],
+          "default": "path",
+          "description": "存什么到变量：path(文件路径)/dataUrl(Data URL带前缀)/base64(纯base64)。单值用字符串，多值用数组如 [\"dataUrl\",\"path\"]。saveToFile=false 时不能含 path"
+        },
         "condition": { "$ref": "#/$defs/detectConditionFull", "description": "步骤执行前条件检测（含 new_row_appears）" },
         "fallback": { "$ref": "#/$defs/stepFallback" },
         "preSetup": { "$ref": "#/$defs/preSetup" },
         "retry": { "$ref": "#/$defs/stepRetry" },
-        "onError": { "$ref": "#/$defs/onErrorEnum" }
+        "onError": { "$ref": "#/$defs/onErrorEnum" },
+        "method": { "type": "string", "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"], "description": "http 请求方法，默认 GET。HEAD 只取响应头不取 body；OPTIONS 查服务器支持的方法/CORS 预检" },
+        "headers": { "type": "object", "description": "请求头 kv，value 支持 {{vars}}（非 string 值自动 ToString 后替换）" },
+        "body": { "description": "请求体。files 为空时：object→JSON 序列化+自动 Content-Type: application/json，string→原样；files 非空时（form-data）：object 的 kv 当普通表单字段", "oneOf": [{"type":"string"},{"type":"object"}] },
+        "params": { "type": "object", "description": "query string 参数 kv，value 支持 {{vars}}，代码自动拼到 URL ?key=value" },
+        "failOnHttpError": { "type": "boolean", "default": true, "description": "非 2xx 是否抛错（false 时存响应不抛，后续按 statusCode 自行判断）" },
+        "shareBrowserSession": { "type": "boolean", "default": false, "description": "true→共享浏览器 cookie/storage（自动带登录态，调同站 API 免传 Authorization）；false/省略→独立请求（HttpClient，不带浏览器 cookie，调第三方 API 不泄露登录态）" },
+        "files": {
+          "type": "array",
+          "description": "文件列表。非空→自动 form-data（隐式判断，对齐 Python requests files=）；为空→body 走 JSON。每项 {paramName,path,filename?,contentType?}",
+          "items": {
+            "type": "object",
+            "properties": {
+              "paramName": { "type": "string", "description": "接口入参名（multipart 表单字段名，即服务端接收文件的参数名，如 Spring @RequestPart(\"file\") 的 file）。参考 JMeter Parameter Name / n8n Parameter Name" },
+              "path": { "type": "string", "description": "文件路径，支持 {{vars}}（如 {{filePath}} 或 {{attachments}} 数组取 [0]）" },
+              "filename": { "type": "string", "description": "上传文件名（不传用 path 的 basename）" },
+              "contentType": { "type": "string", "description": "MIME（不传用扩展名推断或默认 application/octet-stream）" }
+            },
+            "required": ["paramName", "path"]
+          }
+        }
       },
       "allOf": [
         { "if": { "not": { "properties": { "action": { "const": "check" } } } }, "then": { "properties": { "detect": false } } },
@@ -354,7 +380,8 @@
         { "if": { "properties": { "action": { "const": "goto" } } }, "then": { "properties": { "storeAs": false } } },
         { "if": { "properties": { "action": { "const": "ai" } } },
           "then": { "properties": { "storeAs": { "type": "object", "additionalProperties": { "type": "string" },
-            "description": "AI action 必须用多变量格式：{ \"变量名\": \"描述\" }" } } } }
+            "description": "AI action 必须用多变量格式：{ \"变量名\": \"描述\" }" } } } },
+        { "if": { "properties": { "action": { "const": "httpRequest" } } }, "then": { "required": ["url", "storeAs"] } }
       ]
     },
 
@@ -584,7 +611,7 @@
     "actionEnum": {
       "type": "string",
       "description": "步骤操作类型",
-      "enum": ["navigate", "click", "fill", "type", "select", "hover", "pressKey", "scroll", "upload", "evaluate", "extract", "goBack", "reload", "switchTab", "closeTab", "wait", "check", "handleDialog", "screenshot", "ai", "captcha", "goto"]
+      "enum": ["navigate", "click", "fill", "type", "select", "hover", "pressKey", "scroll", "upload", "evaluate", "extract", "goBack", "reload", "switchTab", "closeTab", "wait", "check", "handleDialog", "screenshot", "ai", "captcha", "goto", "httpRequest"]
     },
 
     "phaseTypeEnum": {

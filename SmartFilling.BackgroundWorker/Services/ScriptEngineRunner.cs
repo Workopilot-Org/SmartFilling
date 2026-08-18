@@ -19,6 +19,7 @@ public class ScriptEngineRunner
     private readonly SmartFilling.Engine.Services.CaptchaService? _captchaService;
     private readonly TaskOrchestrationService? _orchestrationService;
     private readonly TaskActivityTracker _activityTracker;
+    private readonly HttpClient? _httpClient;
 
     public ScriptEngineRunner(
         EngineILogger logger,
@@ -28,7 +29,8 @@ public class ScriptEngineRunner
         TaskActivityTracker activityTracker,
         AiOptions? aiOptions = null,
         SmartFilling.Engine.Services.CaptchaService? captchaService = null,
-        TaskOrchestrationService? orchestrationService = null)
+        TaskOrchestrationService? orchestrationService = null,
+        HttpClient? httpClient = null)
     {
         _logger = logger;
         _reporterFactory = reporterFactory;
@@ -38,6 +40,7 @@ public class ScriptEngineRunner
         _aiOptions = aiOptions;
         _captchaService = captchaService;
         _orchestrationService = orchestrationService;
+        _httpClient = httpClient;
     }
 
     public async Task RunAsync(FillTask task, CancellationToken ct)
@@ -82,11 +85,11 @@ public class ScriptEngineRunner
             if (_aiOptions != null && !string.IsNullOrEmpty(_aiOptions.ApiKey))
             {
                 var aiProvider = new OpenAiProvider(_aiOptions, _logger);
-                engine = new ScriptEngine(_logger, _engineOptions, aiProvider, reporter, _captchaService);
+                engine = new ScriptEngine(_logger, _engineOptions, aiProvider, reporter, _captchaService, _httpClient);
             }
             else
             {
-                engine = new ScriptEngine(_logger, _engineOptions, reporter, _captchaService);
+                engine = new ScriptEngine(_logger, _engineOptions, reporter, _captchaService, _httpClient);
             }
 
             // P1（第8轮决策落实）：订阅 Engine StepActivity 事件——主执行循环每步触发，调 TaskActivityTracker.Touch 更新最近活动时间

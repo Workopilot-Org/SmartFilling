@@ -25,7 +25,7 @@
 | wait | 01(ms),17(until selector_visible) | D | ✓ | ms + until 两种 |
 | check | 几乎全部 | D | ✓ | 配合所有 detect |
 | handleDialog | 08(延迟弹窗) | D | ✓ | accept |
-| screenshot | 01,06,17(viewport/fullPage/element/storeContent path/dataUrl/both) | D | ✓ | 全变体（触发 ③ schema 修复） |
+| screenshot | 01,06,17(viewport/fullPage/element/storeContent path/dataUrl/base64/数组组合) | D | ✓ | 全变体（触发 ③ schema 修复） |
 | ai | 23(action),24(phase) | A | ✓ | DashScope 自主执行 |
 | captcha | 19(text),20(slide),21(pixel),22(click) | S | ✓ | 经 mini_server（captcha_service/mini_server.py，8000） |
 | goto | 11(toPhase) | D | ✓ | 跳过中间 phase |
@@ -92,7 +92,7 @@
 ## 5. 字段特性覆盖
 
 - 变量替换 `{{var}}`：02(F_NAME),09(F_FILE/F_FILES 数组),10(DETAILS 嵌套行/{{name}}/{{qty}})
-- storeAs 单/多变量：06,15,16,17(screenshot storeContent both/dataUrl)
+- storeAs 单/多变量：06,15,16,17(screenshot storeContent 数组/dataUrl)
 - transform/format：未单独设场景（fields 用 string/number/file/array，无 date/format 场景；属可选覆盖）
 - source=system：未单独场景（AI 收集层特性，App 侧 chat 路径，非 Worker 填报路径）
 - skipIfDataEmpty / skipIfElementMissing：未单独场景（容错修饰符，引擎已单测覆盖）
