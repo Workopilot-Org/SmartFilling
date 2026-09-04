@@ -655,7 +655,7 @@
     "uiComponentEnum": {
       "type": "string",
       "description": "UI 组件类型",
-      "enum": ["input", "textarea", "select", "radio", "checkbox", "upload", "click-choose", "datepicker", "hidden", "table"]
+      "enum": ["input", "textarea", "select", "radio", "checkbox", "upload", "click-choose", "datepicker", "hidden", "table", "subform"]
     },
 
     "sourceEnum": {

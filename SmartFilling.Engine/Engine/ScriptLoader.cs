@@ -304,6 +304,7 @@ public static class ScriptLoader
         ValidateScrollExclusive(script.Phases, errors);          // 批次9④：scroll selector/direction 二选一
         ValidateDetectParamsAll(script, errors);                  // R4-1：detect 各 type 必填参数
         ValidateFileUiComponent(script.Fields, errors);           // R4-2：type=file uiComponent 限 upload/hidden
+        ValidateArrayUiComponent(script.Fields, errors);         // subform：table/subform 限 type=array（补既有 table 缺口 + subform 新约束）
         ValidateSystemCredentialFields(script.Fields, errors);    // DEC-7：username/password 必须 source=system
         ValidateCaptcha(script.Phases, errors);                   // F2：captcha pixel 必填 slider/target/background selector
         ValidateNameCollisions(script, fieldNames, errors);       // ④-8：字段名∩storeAs 名 / 字段名∩系统保留字（静默遮蔽取错值）
@@ -1225,6 +1226,24 @@ public static class ScriptLoader
             }
             if (field.Fields is { Count: > 0 })
                 ValidateFileUiComponent(field.Fields, errors);
+        }
+    }
+
+    /// <summary>
+    /// subform 枚举值新增（2026-08-27）：table/subform 都是 array 的呈现形态，须 type=array。
+    /// table=Grid 型明细表（网格表格），subform=Form 型明细表（表单字段组），数据结构相同（type:array+fields），仅平台界面呈现不同。
+    /// 单向约束 table/subform ⇒ type=array（反向不要求：type=array 仍可 table/items/subform/null）。
+    /// 递归遍历含 field.Fields 嵌套（仿 ValidateFileUiComponent 递归模式）。Fields 必填由 ValidateArrayFields 另管。
+    /// 触发路径：App SaveScript 保存 + Worker FetchScripts 加载 + 手工 LoadFromJson（全路径）。
+    /// </summary>
+    private static void ValidateArrayUiComponent(List<FieldDefinition> fields, List<string> errors)
+    {
+        foreach (var field in fields)
+        {
+            if ((field.UiComponent == "table" || field.UiComponent == "subform") && field.Type != "array")
+                errors.Add($"uiComponent={field.UiComponent} 字段 '{field.Name}' 的 type 必须为 array（当前: {field.Type}）");
+            if (field.Fields is { Count: > 0 })
+                ValidateArrayUiComponent(field.Fields, errors);
         }
     }
 

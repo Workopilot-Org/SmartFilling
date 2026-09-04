@@ -9,18 +9,20 @@ using SmartFilling.App.Services;
 using SmartFilling.Engine.Ai;
 using SmartFilling.Engine.Engine;
 using SmartFilling.Engine.Models;
+using System.Reflection;
 using System.Text.Json;
 using EngineILogger = SmartFilling.Engine.Logging.ILogger;
+using OpenAI.Chat;
 
 namespace SmartFilling.App.Tests;
 
 /// <summary>
-/// loopSource 未注册时自动注册（方案A：ensure_phase 加 phaseFieldType 三选一 table/items/file）测试。
+/// loopSource 未注册时自动注册（方案A：ensure_phase 加 phaseFieldType 四选一 table/items/file/subform）测试。
 /// 替代方案B（phaseFieldFields）——AI 无 fillData 难一次性猜全子列，改 table bare array 循环内 operate 增量注册子列。
 /// 测试方法论（test-covers-production-deserialize-path）：phaseFieldItems 用 JsonElement 形态构造
 /// （JsonDocument.Parse + Clone，模拟 AI 工具参数经 OpenAiProvider.ParseJsonElement 归一化的生产反序列化路径），
 /// 不用 CLR new{} 绕过 `is JsonElement` 类型判断分支。断言验值不只验状态（Fields.Count/子列 Name/Type/uiComponent/Items.Type/Multiple 具体值）。
-/// T5（问用户兜底）：mock OnRequestHelp 回复 a/b/c（照 P15，TestPendingHelpTcs 读 ExecuteRequestHelpAsync 新建 tcs TrySetResult）。
+/// T5（问用户兜底）：mock OnRequestHelp 回复 a/b/c/d（照 P15，TestPendingHelpTcs 读 ExecuteRequestHelpAsync 新建 tcs TrySetResult）。
 /// T10（operate 跳过 loopSource）：直测 IsLoopSourceField helper（提 internal，照 ParseSubFields 模式）——loopSource 字段 true / 普通 array 字段 false（不误伤）。
 /// </summary>
 public class EnsurePhaseAutoRegisterTests
@@ -74,6 +76,8 @@ public class EnsurePhaseAutoRegisterTests
     public async Task T1_TopLevelLoop_PhaseFieldTypeTable_AutoRegistersBareArray()
     {
         var engine = CreateEngine(CreateMainDocPage());
+        // InferLoopSourceIntent(null)→"ambiguous" 触发 loopSource 意图 help（L2645），需 OnRequestHelp mock 回复避免 TCS 永久等待
+        engine.OnRequestHelp += (a, q, s) => { engine.TestPendingHelpTcs?.TrySetResult("a"); return Task.CompletedTask; };
         var args = new Dictionary<string, object>
         {
             ["phase"] = "fill_items",
@@ -100,6 +104,8 @@ public class EnsurePhaseAutoRegisterTests
     public async Task T2_NestedLoop_PhaseFieldTypeTable_RegistersInParentFields()
     {
         var engine = CreateEngine(CreateMainDocPage());
+        // InferLoopSourceIntent(null)→"ambiguous" 触发 loopSource 意图 help（两次 EnsurePhaseAsync 各一次），需 OnRequestHelp mock 回复
+        engine.OnRequestHelp += (a, q, s) => { engine.TestPendingHelpTcs?.TrySetResult("a"); return Task.CompletedTask; };
         var args1 = new Dictionary<string, object>
         {
             ["phase"] = "fill_items",
@@ -139,6 +145,8 @@ public class EnsurePhaseAutoRegisterTests
     public async Task T3_SimpleArray_PhaseFieldTypeItems_AutoRegisters()
     {
         var engine = CreateEngine(CreateMainDocPage());
+        // InferLoopSourceIntent(null)→"ambiguous" 触发 loopSource 意图 help（L2645），需 OnRequestHelp mock 回复
+        engine.OnRequestHelp += (a, q, s) => { engine.TestPendingHelpTcs?.TrySetResult("a"); return Task.CompletedTask; };
         var args = new Dictionary<string, object>
         {
             ["phase"] = "fill_tags",
@@ -167,6 +175,8 @@ public class EnsurePhaseAutoRegisterTests
     public async Task T4_FileUpload_PhaseFieldTypeFile_AutoRegisters()
     {
         var engine = CreateEngine(CreateMainDocPage());
+        // InferLoopSourceIntent(null)→"ambiguous" 触发 loopSource 意图 help（L2645），需 OnRequestHelp mock 回复
+        engine.OnRequestHelp += (a, q, s) => { engine.TestPendingHelpTcs?.TrySetResult("a"); return Task.CompletedTask; };
         var args = new Dictionary<string, object>
         {
             ["phase"] = "fill_attachments",
@@ -188,7 +198,7 @@ public class EnsurePhaseAutoRegisterTests
         Assert.Null(att.Items);
     }
 
-    // T5a：不传 phaseFieldType -> 问用户 a/b/c -> mock 回复 a -> 兜底 table（验值：type/array/uiComponent=table/Fields 空）
+    // T5a：不传 phaseFieldType -> 问用户 a/b/c/d -> mock 回复 a -> 兜底 table（验值：type/array/uiComponent=table/Fields 空）
     [Fact]
     public async Task T5a_NoPhaseFieldType_AskUser_ReplyA_RegistersTable()
     {
@@ -199,7 +209,7 @@ public class EnsurePhaseAutoRegisterTests
             ["phase"] = "fill_items",
             ["phaseType"] = "loop",
             ["phaseLoopSource"] = "items"
-            // 不传 phaseFieldType -> 问 a/b/c -> mock 回复 a -> table 兜底
+            // 不传 phaseFieldType -> 问 a/b/c/d -> mock 回复 a -> table 兜底
         };
 
         var (err, _) = await engine.EnsurePhaseAsync(args, CancellationToken.None);
@@ -217,7 +227,13 @@ public class EnsurePhaseAutoRegisterTests
     public async Task T5b_NoPhaseFieldType_AskUser_ReplyB_RegistersItems()
     {
         var engine = CreateEngine(CreateMainDocPage());
-        engine.OnRequestHelp += (a, q, s) => { engine.TestPendingHelpTcs?.TrySetResult("b"); return Task.CompletedTask; };
+        engine.OnRequestHelp += (a, q, s) => {
+            // 第一次 help（loopSource 意图）问"新建字段 vs 新建变量"→ 回复 "a"（新建字段，shouldRegisterField=true）
+            // 第二次 help（phaseFieldType）问"哪种类型"→ 回复 "b"（items）
+            var reply = q.Contains("哪种类型") ? "b" : "a";
+            engine.TestPendingHelpTcs?.TrySetResult(reply);
+            return Task.CompletedTask;
+        };
         var args = new Dictionary<string, object>
         {
             ["phase"] = "fill_tags",
@@ -241,7 +257,13 @@ public class EnsurePhaseAutoRegisterTests
     public async Task T5c_NoPhaseFieldType_AskUser_ReplyC_RegistersFile()
     {
         var engine = CreateEngine(CreateMainDocPage());
-        engine.OnRequestHelp += (a, q, s) => { engine.TestPendingHelpTcs?.TrySetResult("c"); return Task.CompletedTask; };
+        engine.OnRequestHelp += (a, q, s) => {
+            // 第一次 help（loopSource 意图）问"新建字段 vs 新建变量"→ 回复 "a"（新建字段，shouldRegisterField=true）
+            // 第二次 help（phaseFieldType）问"哪种类型"→ 回复 "c"（file）
+            var reply = q.Contains("哪种类型") ? "c" : "a";
+            engine.TestPendingHelpTcs?.TrySetResult(reply);
+            return Task.CompletedTask;
+        };
         var args = new Dictionary<string, object>
         {
             ["phase"] = "fill_attachments",
@@ -334,6 +356,8 @@ public class EnsurePhaseAutoRegisterTests
     public async Task T9_BuildPhaseStatus_RecursiveIncludesNestedFieldNames()
     {
         var engine = CreateEngine(CreateMainDocPage());
+        // InferLoopSourceIntent(null)→"ambiguous" 触发 loopSource 意图 help（两次 EnsurePhaseAsync 各一次），需 OnRequestHelp mock 回复避免 TCS 永久等待
+        engine.OnRequestHelp += (a, q, s) => { engine.TestPendingHelpTcs?.TrySetResult("a"); return Task.CompletedTask; };
         await engine.EnsurePhaseAsync(new Dictionary<string, object>
         {
             ["phase"] = "fill_items", ["phaseType"] = "loop", ["phaseLoopSource"] = "items",
@@ -367,7 +391,7 @@ public class EnsurePhaseAutoRegisterTests
         Assert.Equal(6, registeredFields.Count);
     }
 
-    // T10：IsLoopSourceField 精确判断（P13）-- loopSource 字段 true（顶层+嵌套），普通字段名 false（不误伤，operate 仍问 a/b/c）。直测 helper（提 internal，照 ParseSubFields 模式）。
+    // T10：IsLoopSourceField 精确判断（P13）-- loopSource 字段 true（顶层+嵌套），普通字段名 false（不误伤，operate 仍问 a/b/c/d）。直测 helper（提 internal，照 ParseSubFields 模式）。
     [Fact]
     public void T10_IsLoopSourceField_LoopSourceTrue_NonLoopSourceFalse()
     {
@@ -378,7 +402,7 @@ public class EnsurePhaseAutoRegisterTests
         };
         Assert.True(RecordingEngine.IsLoopSourceField(phases, "items"));        // 顶层 loopSource
         Assert.True(RecordingEngine.IsLoopSourceField(phases, "attachments")); // 嵌套 loopSource
-        Assert.False(RecordingEngine.IsLoopSourceField(phases, "details"));   // 非 loopSource（普通 array 字段）-> false（不误伤，operate 仍问 a/b/c 保留覆盖/换名）
+        Assert.False(RecordingEngine.IsLoopSourceField(phases, "details"));   // 非 loopSource（普通 array 字段）-> false（不误伤，operate 仍问 a/b/c/d 保留覆盖/换名）
         Assert.False(RecordingEngine.IsLoopSourceField(phases, "nonExist"));  // 不存在
     }
 
@@ -387,6 +411,8 @@ public class EnsurePhaseAutoRegisterTests
     public async Task T11_TableBareArray_FieldsEmpty_ThenIncrementalAdd_AllowedAndAlreadyRegisteredIgnores()
     {
         var engine = CreateEngine(CreateMainDocPage());
+        // 第一次 EnsurePhaseAsync 的 items 未注册 → InferLoopSourceIntent(null)→"ambiguous" 触发 loopSource 意图 help，需 OnRequestHelp mock 回复（第二次 items 已注册走"已注册忽略"不触发 help）
+        engine.OnRequestHelp += (a, q, s) => { engine.TestPendingHelpTcs?.TrySetResult("a"); return Task.CompletedTask; };
         await engine.EnsurePhaseAsync(new Dictionary<string, object>
         {
             ["phase"] = "fill_items", ["phaseType"] = "loop", ["phaseLoopSource"] = "items",
@@ -420,6 +446,8 @@ public class EnsurePhaseAutoRegisterTests
     public async Task T12_ItemsType_MissingPhaseFieldItems_Errors()
     {
         var engine = CreateEngine(CreateMainDocPage());
+        // phaseLoopSource="tags" 未注册 → InferLoopSourceIntent(null)→"ambiguous" 触发 loopSource 意图 help，需 OnRequestHelp mock 回复"a"（新建字段）后才走到 phaseFieldType=items 缺 phaseFieldItems 报错分支
+        engine.OnRequestHelp += (a, q, s) => { engine.TestPendingHelpTcs?.TrySetResult("a"); return Task.CompletedTask; };
         var args = new Dictionary<string, object>
         {
             ["phase"] = "fill_tags",
@@ -434,5 +462,59 @@ public class EnsurePhaseAutoRegisterTests
         Assert.NotNull(err);
         Assert.Contains("phaseFieldItems", err!);
         Assert.DoesNotContain(engine.Script.Fields, f => f.Name == "tags");  // 录制期即拒，不落字段
+    }
+
+    // T13：phaseFieldType=subform -> 自动注册为 bare array + UiComponent=subform（Form 型明细表，数据结构同 table）（验值：type/array/subform/label/Fields 空）
+    [Fact]
+    public async Task T13_TopLevelLoop_PhaseFieldTypeSubform_AutoRegistersBareArrayWithSubformUi()
+    {
+        var engine = CreateEngine(CreateMainDocPage());
+        // InferLoopSourceIntent(null)→"ambiguous" 触发 loopSource 意图 help（L2645），需 OnRequestHelp mock 回复
+        engine.OnRequestHelp += (a, q, s) => { engine.TestPendingHelpTcs?.TrySetResult("a"); return Task.CompletedTask; };
+        var args = new Dictionary<string, object>
+        {
+            ["phase"] = "fill_rows",
+            ["phaseType"] = "loop",
+            ["phaseLoopSource"] = "rows",
+            ["phaseFieldType"] = "subform",
+            ["phaseFieldLabel"] = "明细行"
+        };
+
+        var (err, _) = await engine.EnsurePhaseAsync(args, CancellationToken.None);
+
+        Assert.Null(err);  // 自动注册成功
+        var rows = engine.Script.Fields.FirstOrDefault(f => f.Name == "rows");
+        Assert.NotNull(rows);
+        Assert.Equal("array", rows!.Type);
+        Assert.Equal("subform", rows.UiComponent);  // subform（Form 型），非 table
+        Assert.Equal("明细行", rows.Label);
+        Assert.NotNull(rows.Fields);
+        Assert.Empty(rows.Fields!);  // bare array：Fields=[]（子列循环内 operate 增量注册，同 table）
+    }
+
+    // T14：operate + save_step 工具 phaseFieldType enum 含 subform（反射验证工具 schema，防 enum 漏加 subform 的 silent 不可达回归）
+    [Theory]
+    [InlineData("operate")]
+    [InlineData("save_step")]
+    public void ToolSchema_PhaseFieldTypeEnum_ContainsSubform(string toolName)
+    {
+        var engine = CreateEngine(CreateMainDocPage());
+        var method = typeof(RecordingEngine).GetMethod("GetRecordingTools",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        var tools = (List<ChatTool>)method!.Invoke(engine, null)!;
+        var tool = tools.First(t => t.FunctionName == toolName);
+        Assert.NotNull(tool);
+
+        // ChatTool 把 schema 存为 BinaryData — 反射取 BinaryData 类型的属性（照 OperateSchema_ContainsValueFromField 先例）
+        var bdProp = typeof(ChatTool).GetProperties()
+            .First(p => p.PropertyType == typeof(BinaryData));
+        var schemaBd = (BinaryData)bdProp.GetValue(tool)!;
+        var schemaJson = schemaBd.ToString();
+        var schema = JsonDocument.Parse(schemaJson);
+        Assert.True(schema.RootElement.GetProperty("properties").TryGetProperty("phaseFieldType", out var phaseFieldType),
+            $"{toolName} 工具 schema 应含 phaseFieldType 字段");
+        var enumValues = phaseFieldType.GetProperty("enum").EnumerateArray().Select(e => e.GetString()!).ToList();
+        Assert.Contains("subform", enumValues);  // 验值：enum 数组含 subform（防漏加 silent 不可达）
     }
 }

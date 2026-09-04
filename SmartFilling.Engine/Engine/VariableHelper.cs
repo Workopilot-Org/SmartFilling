@@ -28,6 +28,30 @@ public static class VariableHelper
     }
 
     /// <summary>
+    /// 统一递归把任意对象值归一到 CLR：JsonElement→委托 NormalizeJsonElement、
+    /// ExpandoObject/其他 IDictionary&lt;string,object&gt;→具体 Dictionary（字段值递归）、数组/IList→List（逐元素递归）、
+    /// 标量与未知类型原样。消除 Playwright evaluate 返回 JS 对象时（实际形态 ExpandoObject，非 JsonElement 非 Dictionary）
+    /// storeAs 存入 vars 后 {{obj.key}} 访问不到的盲区（ReplaceVars/PluckPath 属性访问只认具体 Dictionary）。
+    /// ⚠️ 与 ScriptEngine 私有 NormalizeValue（fillData 入口归一）保持独立不统一（A5 决策 2026-09-03）：后者幂等穿过
+    /// （无 JsonElement 即原样返回，ExpandoObject 会穿过不转 Dictionary）+ null→""（fillData 语义）；本方法无条件转具体
+    /// Dictionary + null→null（StoreVars 语义）——两者服务不同入口，勿重复合并尝试。
+    /// </summary>
+    public static object? NormalizeToClr(object? value)
+    {
+        if (value == null) return null;
+        return value switch
+        {
+            JsonElement je => NormalizeJsonElement(je),                          // JsonElement → CLR（NormalizeJsonElement 已递归）
+            byte[] arr => arr,                                                   // 硬防御：byte[] 实现 IList，避免被拆成 List<object>（对齐 ScriptEngine.NormalizeValue 同款）
+            Dictionary<string, object> dict => dict,                             // 具体 CLR Dictionary 原样返回不深拷（A3 选 A：httpRequest respObj 等已归一形态零深拷开销）
+            IDictionary<string, object> dict => new Dictionary<string, object>(  // ExpandoObject（实现 IDictionary<string,object>）及非具体 Dictionary 的实现 → 转 Dictionary，字段值递归（嵌套 ExpandoObject/object[]）
+                dict.Select(kv => new KeyValuePair<string, object>(kv.Key, NormalizeToClr(kv.Value)!))),
+            System.Collections.IList list => list.Cast<object>().Select(NormalizeToClr).ToList(),  // 数组（含 Playwright evaluate 的 object[]）/列表：逐元素递归
+            _ => value                                                           // 标量（string/double/bool 等）与未知类型原样返回
+        };
+    }
+
+    /// <summary>
     /// 归一化 storeContent 为 List&lt;string&gt;（§5.5：string 单值→[string]，JsonElement(Array)→枚举，null→["path"]）。
     /// 供 StepExecutor（ExecuteScreenshotAsync）和 ScriptLoader（校验）共享。
     /// </summary>
@@ -374,18 +398,19 @@ public static class VariableHelper
     {
         if (storeAs == null || value == null) return;
 
-        // STJ 把 object? 字段（StepNode.StoreAs）反序列化为 JsonElement，非 C# string/IDictionary。
-        // 归一化为 CLR 后 switch 才能命中 string / Dictionary 分支——否则单 storeAs 字符串（JsonElement(String)）
-        // 静默漏存（原 switch 仅 case string + case JsonElement(Object)），导致经 JSON 加载的脚本
-        // extract/evaluate storeAs 全部不进 vars、returnData 引用全空（生产链路 App→Worker + golden 套件均受影响）。
-        if (storeAs is System.Text.Json.JsonElement je)
-            storeAs = NormalizeJsonElement(je);
-        // 调研#9 修复（2026-06-29）：value 经生产链路也可能是 JsonElement——ai action 的 resultValue 来自 done 工具 result 参数，
-        // 经 OpenAiProvider.ParseJsonElement，Object 值保持 JsonElement(Object)（非 CLR Dictionary，见 OpenAiProvider L137 Object→element）。
-        // 原仅归一化 storeAs，多变量分支 `case Dictionary when value is Dictionary` 对 JsonElement(Object) 不匹配 → 多变量 storeAs 静默不存（生产 bug，golden 27 硬断言揭穿）。
-        // 归一化 value（对称 storeAs）让多变量分支命中；与 ai phase CollectAllStoreAs 的 JsonElement(Object) 分支（ScriptEngine L659）行为一致。
-        if (value is System.Text.Json.JsonElement ve)
-            value = NormalizeJsonElement(ve);
+        // storeAs/value 统一无条件过 NormalizeToClr（方案 B 完全对称）：JsonElement 委托 NormalizeJsonElement、
+        // ExpandoObject/IDictionary 转 Dictionary、string/具体 CLR Dictionary 原样返回（A3 选 A：httpRequest respObj 等已归一形态零深拷开销）。
+        // 归一化的历史背景（三层由来的现行语义）：
+        // ① STJ 把 object? 字段（StepNode.StoreAs）反序列化为 JsonElement(String)——原 switch 仅 case string + case JsonElement(Object)
+        //   漏 JsonElement(String) → 单 storeAs 静默漏存，经 JSON 加载的脚本（生产 App→Worker + golden 套件）extract/evaluate
+        //   storeAs 全部不进 vars、returnData 引用全空（回归测试 StoreVars_JsonElementString_StoreName）。
+        // ② 调研#9（2026-06-29）：value 经生产链路也可能是 JsonElement——ai action resultValue 来自 done 工具 result 参数，
+        //   经 OpenAiProvider.ParseJsonElement 保持 JsonElement(Object)（非 CLR Dictionary），多变量分支 `case Dictionary when value
+        //   is Dictionary` 不匹配 → 多变量 storeAs 静默不存（回归测试 StoreVars_ObjectMap_JsonValueIsJsonObjectElement）。
+        // ③ evaluate 返回 JS 对象时 Playwright 产 ExpandoObject（非 JsonElement 非 Dictionary）→ 归一为 Dictionary 后
+        //   下游 {{obj.key}}（ReplaceVars/PluckPath 只认 Dictionary）才可达（回归测试 EvaluateObjectStoreAsTests）。
+        storeAs = NormalizeToClr(storeAs);
+        value = NormalizeToClr(value);
 
         switch (storeAs)
         {
@@ -394,7 +419,7 @@ public static class VariableHelper
                 if (value is Dictionary<string, object> resultMap && resultMap.TryGetValue(varName, out var dictVal))
                     vars[varName] = dictVal;
                 else
-                    vars[varName] = value;
+                    vars[varName] = value!;  // value 经 L399 null 守卫 + NormalizeToClr 对非 null 输入恒返非 null，! 仅抑制 nullable flow 分析
                 break;
             case Dictionary<string, object> map when value is Dictionary<string, object> resultMap2:
                 // 多 storeAs（storeAs 是 {varName:描述} 对象）：AI fallback 返回 JSON 对象时按变量名逐个提取

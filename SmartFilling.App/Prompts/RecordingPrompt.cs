@@ -284,10 +284,10 @@ internal static class RecordingPrompt
         | `fieldPattern` | 有格式校验规则时 | `"^1\\d{10}$"` |
         | `fieldPlaceholder` | 想覆盖代码自动提取的 placeholder 时 | `"请输入手机号"` |
         | `fieldMultiple` | 多选/多文件且代码检测不到时 | `true` |
-        | `fieldFields` | 字段是 table 类型时，传子字段 JSON 数组（每列一个子字段） | 见下方示例 |
-        | `fieldItems` | 字段是简单数组（非 table）时，传元素类型定义 | `{"type":"string"}` |
+        | `fieldFields` | 字段是 table/subform 类型时，传子字段 JSON 数组（每列一个子字段） | 见下方示例 |
+        | `fieldItems` | 字段是简单数组（非 table/subform）时，传元素类型定义 | `{"type":"string"}` |
 
-        **fieldFields 示例**（table 子字段）：
+        **fieldFields 示例**（table/subform 子字段，数据结构相同）：
         ```json
         "fieldFields": [
           {"name": "materialName", "label": "材料名称", "type": "string", "uiComponent": "click-choose", "required": true, "description": "弹窗搜索选择材料"},
@@ -309,7 +309,7 @@ internal static class RecordingPrompt
         - 只传代码**无法判断**或**判断不准确**的属性
         - `fieldSource: "system"` 对 username/password 等系统变量**必须传**
         - `fieldDescription` 对 click-choose 等复杂组件**建议传**
-        - `fieldFields` 对 table 类型字段**必须传**，每列一个子字段
+        - `fieldFields` 对 table/subform 类型字段**必须传**，每列一个子字段
         - `fieldItems` 对简单数组字段按需传
 
         **fieldName 必传规则（不可遗漏）**
@@ -342,21 +342,29 @@ internal static class RecordingPrompt
         - `phaseType`：phase 类型（sequential/loop/ai），仅首次传入时需要
         - `phaseAiGoal`：phase 业务目标（**必填**），首次创建 phase 时传入简短目标描述（如「填写合同信息」「上传附件」），用于 AI fallback/ai phase；缺失会导致脚本加载失败
         - `phaseLoopSource`：loop phase 的循环数据源字段名，仅 loop 类型需要。**写裸字段名（不写 `{{}}`，如 `items` 而非 `{{items}}`）**。可引用已注册字段（fillData）或前序 step 的 storeAs 变量（vars fallback）。未注册字段时代码检查任务描述措辞判断意图（含"新建/创建变量/存数组"=创建新变量不注册字段；含"字段/数据源/从外部传入"=创建新字段走 phaseFieldType；判断不出则问用户）。已注册则代码直接用；写错会导致 loop 0 迭代、明细行不填
-        - `phaseFieldType`：loopSource 未注册时自动注册的字段类型，三选一：
-          - `table`：明细表（多列），代码注册 bare array（`type=array, uiComponent=table, Fields=[]`），子列由循环内 operate 增量注册（**loop 内至少 operate 一个子列，否则空 loop 保存被拒**）。配 `phaseFieldLabel`
+        - `phaseFieldType`：loopSource 未注册时自动注册的字段类型，四选一：
+          - `table`：Grid 型明细表（目标网站已有网格表格 + @rowindex 行索引），代码注册 bare array（`type=array, uiComponent=table, Fields=[]`），子列由循环内 operate 增量注册（**loop 内至少 operate 一个子列，否则空 loop 保存被拒**）。配 `phaseFieldLabel`
+          - `subform`：Form 型明细表（目标网站是表单字段组 + 添加行/提交按钮，填完提交出新行，无网格），数据结构同 table（`type=array` + `Fields=[]`，循环内 operate 增量注册子列），区别在平台收集界面呈现为按元素铺开的子控件组
           - `items`：简单值列表（标量数组），代码注册 `type=array, Items=phaseFieldItems`，循环内用 `{{_rowItem}}` 引用当前元素。需配 `phaseFieldItems`
           - `file`：纯附件上传，代码注册 `type=file, uiComponent=upload, multiple=true`，循环内用 `{{_path}}` 引用当前行附件 path。无子字段
-          - 不传 `phaseFieldType`（或推断不出）→ 代码问用户 a/b/c，兜底 table
-        - `phaseFieldItems`：仅 `phaseFieldType=items` 时配（元素类型定义，结构同 `fieldItems`）；table/file 传了忽略。已注册则忽略
-        - `phaseFieldLabel`：loopSource 字段的 label（缺省用 loopSource 名），三类型都用
+          - 不传 `phaseFieldType`（或推断不出）→ 代码问用户 a/b/c/d（d subform Form 型明细表），兜底 table
+        - `phaseFieldItems`：仅 `phaseFieldType=items` 时配（元素类型定义，结构同 `fieldItems`）；table/subform/file 传了忽略。已注册则忽略
+        - `phaseFieldLabel`：loopSource 字段的 label（缺省用 loopSource 名），四类型都用
+
+        **Grid/Form 型判断指引**：用 `get_snapshot` 快照区分——Grid 型见 `table`/`grid`/`row`/`cell` 网格 + `@rowindex` 行索引；Form 型见表单字段（input/combobox 组）+ 添加行/提交按钮，无网格表格。
 
         **phaseFieldType 示例**（loopSource 未注册时自动注册，省一步 operate 注册）：
         ```json
-        // table 明细表：ensure_phase 传 phaseLoopSource + phaseFieldType=table + phaseFieldLabel，代码注册 items 为 bare array 字段
+        // table Grid 型明细表：ensure_phase 传 phaseLoopSource + phaseFieldType=table + phaseFieldLabel，代码注册 items 为 bare array 字段
         // 子列 materialName/unit/quantity 由循环内 operate fill 增量注册（不在此一次性传全——录制时无 fillData 难猜子列）
         "phaseLoopSource": "items",
         "phaseFieldType": "table",
         "phaseFieldLabel": "明细表"
+
+        // subform Form 型明细表：数据结构同 table，区别在平台界面呈现为表单字段组（非网格表格）
+        "phaseLoopSource": "rows",
+        "phaseFieldType": "subform",
+        "phaseFieldLabel": "明细行"
 
         // items 简单值列表：传 phaseFieldType=items + phaseFieldItems
         "phaseLoopSource": "tags",

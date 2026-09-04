@@ -58,7 +58,7 @@ internal static class ChatCollectorPrompt
         - `name`：字段标识
         - `label`：显示标签
         - `type`：字段类型（string/number/date/boolean/file/array）
-        - `uiComponent`：UI组件类型（input/textarea/select/radio/checkbox/upload/click-choose/datepicker/table）
+        - `uiComponent`：UI组件类型（input/textarea/select/radio/checkbox/upload/click-choose/datepicker/hidden/table/subform）
         - `required`：是否必填
         - `options`：可选项列表（select/click-choose类型）
         - `format`：格式要求

@@ -1,3 +1,4 @@
+using System.Dynamic;
 using SmartFilling.Engine.Engine;
 using System.Text.Json;
 
@@ -1129,6 +1130,163 @@ public class VariableHelperTests
         var vars = new Dictionary<string, object>();
         VariableHelper.StoreVars(vars, "name", "hello");
         Assert.Equal("hello", vars["name"]);
+    }
+
+    #endregion
+
+    #region NormalizeToClr（evaluate 返回对象归一，计划 evaluate-humble-badger）
+
+    // 背景：Playwright v1.59.0 EvaluateAsync<object?> 对 JS 对象返回 ExpandoObject（源码 ParseEvaluateResultToExpando：
+    // 嵌套对象递归产 ExpandoObject、数组产 object[]、数字产 double、字符串产 string，无 JsonElement/byte[]）。
+    // 本组测试手构 ExpandoObject 覆盖 Playwright 实际值域（string/double/嵌套 ExpandoObject/object[]），
+    // 类型级钉死 NormalizeToClr 的归一律（test-covers-production-deserialize-path：用生产运行时形态构造）。
+
+    [Fact]
+    public void NormalizeToClr_Null_ReturnsNull()
+    {
+        Assert.Null(VariableHelper.NormalizeToClr(null));
+    }
+
+    [Fact]
+    public void NormalizeToClr_Scalars_Passthrough()
+    {
+        // 标量（string/double/bool）原样返回
+        Assert.Equal("hello", VariableHelper.NormalizeToClr("hello"));
+        Assert.Equal(12.5, VariableHelper.NormalizeToClr(12.5));
+        Assert.Equal(true, VariableHelper.NormalizeToClr(true));
+    }
+
+    [Fact]
+    public void NormalizeToClr_ExpandoObject_TopLevel_ConvertsToDictionary()
+    {
+        // Playwright 实际值域：字段值 string / double
+        IDictionary<string, object?> expando = new ExpandoObject();
+        expando["y"] = "2025";
+        expando["d"] = 12.0;
+        var result = VariableHelper.NormalizeToClr(expando);
+        var dict = Assert.IsType<Dictionary<string, object>>(result);
+        Assert.Equal("2025", dict["y"]);
+        Assert.Equal(12.0, dict["d"]);
+    }
+
+    [Fact]
+    public void NormalizeToClr_ExpandoObject_NestedThreeLevels_Recursive()
+    {
+        // 嵌套 JS 对象递归产 ExpandoObject——三层递归转 Dictionary（对齐设计文档 {{a.b.c}} 三层嵌套契约）
+        IDictionary<string, object?> level3 = new ExpandoObject();
+        level3["c"] = "x";
+        IDictionary<string, object?> level2 = new ExpandoObject();
+        level2["b"] = level3;
+        IDictionary<string, object?> level1 = new ExpandoObject();
+        level1["a"] = level2;
+
+        var result = VariableHelper.NormalizeToClr(level1) as Dictionary<string, object>;
+        Assert.NotNull(result);
+        var l2 = Assert.IsType<Dictionary<string, object>>(result!["a"]);
+        var l3 = Assert.IsType<Dictionary<string, object>>(l2["b"]);
+        Assert.Equal("x", l3["c"]);
+    }
+
+    [Fact]
+    public void NormalizeToClr_ObjectArray_PlaywrightForm_RecursiveToList()
+    {
+        // Playwright evaluate 对 JS 数组产 object[]（非 List<object>），Array 实现 IList 被分支覆盖，元素递归归一
+        IDictionary<string, object?> inner = new ExpandoObject();
+        inner["k"] = "v";
+        object[] arr = ["a", 1.5, inner, new object[] { "nested" }];
+        var result = VariableHelper.NormalizeToClr(arr);
+        var list = Assert.IsType<List<object>>(result);
+        Assert.Equal(4, list.Count);
+        Assert.Equal("a", list[0]);
+        Assert.Equal(1.5, list[1]);
+        var dictElem = Assert.IsType<Dictionary<string, object>>(list[2]);
+        Assert.Equal("v", dictElem["k"]);
+        var nestedList = Assert.IsType<List<object>>(list[3]);
+        Assert.Equal("nested", nestedList[0]);
+    }
+
+    [Fact]
+    public void NormalizeToClr_JsonElement_DelegatesToNormalizeJsonElement()
+    {
+        // JsonElement 委托既有 NormalizeJsonElement（httpRequest/ai 路径行为不变）
+        var je = JsonDocument.Parse("{\"a\":{\"b\":\"v\"},\"n\":3}").RootElement;
+        var result = VariableHelper.NormalizeToClr(je);
+        var dict = Assert.IsType<Dictionary<string, object>>(result);
+        var inner = Assert.IsType<Dictionary<string, object>>(dict["a"]);
+        Assert.Equal("v", inner["b"]);
+        Assert.Equal(3L, dict["n"]);  // NormalizeJsonElement 整数产 long
+    }
+
+    [Fact]
+    public void NormalizeToClr_SpecificClrDictionary_PassthroughSameReference()
+    {
+        // A3 选 A：具体 CLR Dictionary（httpRequest respObj 等已归一形态）原样返回不深拷——同一引用（零深拷开销）
+        var dict = new Dictionary<string, object> { ["k"] = "v", ["n"] = 5 };
+        var result = VariableHelper.NormalizeToClr(dict);
+        Assert.Same(dict, result);
+    }
+
+    [Fact]
+    public void NormalizeToClr_ByteArray_PassthroughHardened()
+    {
+        // byte[] 实现 IList，硬防御原样返回（对齐 ScriptEngine.NormalizeValue 同款，防附件 byte[] 内容被拆成 List<object>）
+        byte[] bytes = [1, 2, 3];
+        var result = VariableHelper.NormalizeToClr(bytes);
+        Assert.Same(bytes, result);
+    }
+
+    [Fact]
+    public void NormalizeToClr_UnknownType_Passthrough()
+    {
+        // default 分支：无法识别的类型原样返回（同一引用，防 CS8509 兜底分支语义钉死）
+        var obj = new object();
+        Assert.Same(obj, VariableHelper.NormalizeToClr(obj));
+    }
+
+    [Fact]
+    public void NormalizeToClr_List_Recursive()
+    {
+        // IList 分支（List<object>）：逐元素递归
+        var list = new List<object> { "a", new Dictionary<string, object> { ["k"] = "v" } };
+        var result = Assert.IsType<List<object>>(VariableHelper.NormalizeToClr(list));
+        Assert.Equal(2, result.Count);
+        Assert.Equal("a", result[0]);
+        var dictElem = Assert.IsType<Dictionary<string, object>>(result[1]);
+        Assert.Equal("v", dictElem["k"]);
+    }
+
+    [Fact]
+    public void StoreVars_ExpandoObjectValue_SingleVar_NormalizedThenDotKeyWorks()
+    {
+        // 核心场景（evaluate-humble-badger）：value=ExpandoObject（Playwright evaluate 真实形态）+ 单变量 storeAs
+        // → StoreVars 归一为 Dictionary → {{obj.key}} 可取值（修复前 ExpandoObject 原样存入 vars，
+        // ReplaceVars/PluckPath 只认 Dictionary → 原样字面输出 {{dateParts.y}}，silent）
+        IDictionary<string, object?> expando = new ExpandoObject();
+        expando["y"] = "2025";
+        expando["d"] = "12";
+        var vars = new Dictionary<string, object>();
+        VariableHelper.StoreVars(vars, "dateParts", expando);
+
+        var stored = Assert.IsType<Dictionary<string, object>>(vars["dateParts"]);
+        Assert.Equal("2025", stored["y"]);
+        Assert.Equal("12", stored["d"]);
+        // 下游消费（生产同款函数）：{{dateParts.y}} 替换成功（验值）
+        var replaced = VariableHelper.ReplaceVars("year='{{dateParts.y}}'", [], vars);
+        Assert.Equal("year='2025'", replaced);
+    }
+
+    [Fact]
+    public void StoreVars_ExpandoObjectValue_MultiVar_SplitsByVarName()
+    {
+        // 多变量 storeAs + ExpandoObject value：归一 Dictionary 后多变量分支 `case Dictionary when value is Dictionary`
+        // 命中（修复前 ExpandoObject 不匹配 when → 静默不存，silent-success）
+        IDictionary<string, object?> expando = new ExpandoObject();
+        expando["y"] = "2025";
+        expando["d"] = "12";
+        var vars = new Dictionary<string, object>();
+        VariableHelper.StoreVars(vars, new Dictionary<string, object> { ["y"] = "年", ["d"] = "日" }, expando);
+        Assert.Equal("2025", vars["y"]);
+        Assert.Equal("12", vars["d"]);
     }
 
     #endregion

@@ -622,4 +622,56 @@ public class ScriptLoaderSchemaTests
         var ex = Assert.Throws<InvalidOperationException>(() => ScriptLoader.LoadFromJson(json));
         Assert.Contains("Schema", ex.Message);
     }
+
+    [Fact]
+    public void SubformUiComponent_ArrayWithFields_AcceptedBySchema()
+    {
+        // subform 是新增 uiComponent 枚举值（Form 型明细表），数据结构同 table（type=array+fields）。
+        // 须经 schema enum 校验 + ValidateArrayUiComponent 校验通过。Fields 含至少一个子字段（ValidateArrayFields 拒空 Fields）。
+        var json = """
+        {
+          "version": 2,
+          "scriptId": "test-subform-1",
+          "name": "subform测试",
+          "fields": [
+            { "name": "rows", "label": "明细行", "type": "array", "uiComponent": "subform", "fields": [
+              { "name": "col1", "label": "列1", "type": "string" }
+            ]}
+          ],
+          "phases": [
+            { "kind": "phase", "name": "main", "type": "sequential", "aiGoal": "subform测试", "steps": [
+              { "kind": "step", "name": "checkAlways", "action": "check", "description": "校验", "detect": { "type": "always" }, "then": "nothing" }
+            ]}
+          ]
+        }
+        """;
+        var script = ScriptLoader.LoadFromJson(json);
+        var rows = script.Fields.FirstOrDefault(f => f.Name == "rows");
+        Assert.NotNull(rows);
+        Assert.Equal("array", rows!.Type);
+        Assert.Equal("subform", rows.UiComponent);  // 验值：不只验通过，验 UiComponent=="subform"
+        Assert.NotNull(rows.Fields);
+        Assert.Single(rows.Fields!);  // 含一个子字段
+    }
+
+    [Fact]
+    public void SubformUiComponent_NonArrayType_RejectedByValidateArrayUiComponent()
+    {
+        // subform 限 type=array（单向约束 table/subform⇒type=array）。type=string 标量应被 ValidateArrayUiComponent 拒。
+        // schema 层通过（subform 是合法 enum 值），code 层（ValidateArrayUiComponent）拒 → 双层防御独立验 code 层。
+        var json = ValidMinimal.Replace("\"name\": \"测试脚本\"",
+            "\"name\": \"测试脚本\", \"fields\": [{ \"name\": \"bad\", \"label\": \"坏\", \"type\": \"string\", \"uiComponent\": \"subform\" }]");
+        var ex = Assert.Throws<InvalidOperationException>(() => ScriptLoader.LoadFromJson(json));
+        Assert.Contains("type 必须为 array", ex.Message);  // 验值：错误消息含具体约束
+    }
+
+    [Fact]
+    public void TableUiComponent_NonArrayType_RejectedByValidateArrayUiComponent()
+    {
+        // table 限 type=array（补既有缺口：原无校验，subform 新增时一并补全 table）。type=string 标量应被拒。
+        var json = ValidMinimal.Replace("\"name\": \"测试脚本\"",
+            "\"name\": \"测试脚本\", \"fields\": [{ \"name\": \"bad\", \"label\": \"坏\", \"type\": \"string\", \"uiComponent\": \"table\" }]");
+        var ex = Assert.Throws<InvalidOperationException>(() => ScriptLoader.LoadFromJson(json));
+        Assert.Contains("type 必须为 array", ex.Message);
+    }
 }

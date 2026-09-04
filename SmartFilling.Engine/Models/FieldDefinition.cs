@@ -5,7 +5,7 @@ public record FieldDefinition
     public string Name { get; init; } = "";
     public string Label { get; init; } = "";
     public string Type { get; init; } = "string"; // string/number/date/boolean/file/array
-    public string? UiComponent { get; init; } // input/textarea/select/radio/checkbox/upload/click-choose/datepicker/table/hidden
+    public string? UiComponent { get; init; } // input/textarea/select/radio/checkbox/upload/click-choose/datepicker/table/hidden/subform
     public string? Source { get; init; } // user/system/computed
     public bool? Required { get; init; }
     public object? DefaultValue { get; init; }
